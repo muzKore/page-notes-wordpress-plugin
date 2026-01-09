@@ -3,7 +3,7 @@
  * Plugin Name: Page Notes
  * Plugin URI: https://example.com
  * Description: Add collaborative notes to any element on your WordPress pages
- * Version: 1.1.0
+ * Version: 1.2.0
  * Author: Murray Chapman
  * Author URI: https://muzkore.com
  * License: GPL v2 or later
@@ -16,7 +16,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Define plugin constants
-define('PAGE_NOTES_VERSION', '1.1.0');
+define('PAGE_NOTES_VERSION', '1.2.0');
 define('PAGE_NOTES_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('PAGE_NOTES_PLUGIN_URL', plugin_dir_url(__FILE__));
 
@@ -59,6 +59,12 @@ class PageNotes {
         add_action('wp_ajax_pn_delete_note', array($this, 'ajax_delete_note'));
         add_action('wp_ajax_pn_get_pages_with_notes', array($this, 'ajax_get_pages_with_notes'));
         add_action('wp_ajax_pn_search_users', array($this, 'ajax_search_users'));
+        add_action('wp_ajax_pn_send_notifications', array($this, 'ajax_send_notifications'));
+
+        // Cron job for auto-sending notifications
+        add_filter('cron_schedules', array($this, 'add_cron_schedules'));
+        add_action('page_notes_auto_send_notifications', array($this, 'cron_send_notifications'));
+        add_action('admin_init', array($this, 'schedule_cron_if_needed'));
     }
     
     /**
@@ -79,13 +85,15 @@ class PageNotes {
             assigned_to bigint(20) DEFAULT NULL,
             parent_id bigint(20) DEFAULT 0,
             status varchar(20) DEFAULT 'open',
+            notification_sent tinyint(1) DEFAULT 0,
             created_at datetime DEFAULT CURRENT_TIMESTAMP,
             updated_at datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             PRIMARY KEY (id),
             KEY page_id (page_id),
             KEY user_id (user_id),
             KEY assigned_to (assigned_to),
-            KEY parent_id (parent_id)
+            KEY parent_id (parent_id),
+            KEY notification_sent (notification_sent)
         ) $charset_collate;";
 
         require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
@@ -99,8 +107,11 @@ class PageNotes {
      * Plugin deactivation
      */
     public function deactivate() {
-        // Nothing to do on deactivation
-        // Data is preserved until plugin is uninstalled
+        // Clear scheduled cron job
+        $timestamp = wp_next_scheduled('page_notes_auto_send_notifications');
+        if ($timestamp) {
+            wp_unschedule_event($timestamp, 'page_notes_auto_send_notifications');
+        }
     }
 
     /**
@@ -204,6 +215,13 @@ class PageNotes {
         $page_id = intval($_POST['page_id']);
         $page_url = isset($_POST['page_url']) ? sanitize_text_field($_POST['page_url']) : '';
 
+        // Get current user ID for visibility filtering
+        $current_user_id = get_current_user_id();
+
+        // Check if current user is the Notes Manager
+        $manager_user_id = get_option('page_notes_manager_user_id', '');
+        $is_manager = !empty($manager_user_id) && $current_user_id == $manager_user_id;
+
         // Query by both page_id AND page_url to catch notes that might have been stored with different IDs
         $notes = $wpdb->get_results($wpdb->prepare(
             "SELECT n.*,
@@ -220,23 +238,49 @@ class PageNotes {
             $page_url
         ));
 
-        // Build better display names using first/last names with fallback
-        foreach ($notes as $note) {
-            $note->user_name = esc_html($note->user_name);
-            $note->element_selector = esc_attr($note->element_selector);
-            $note->assigned_to_username = esc_html($note->assigned_to_username);
+        // Filter notes based on visibility rules
+        $visible_notes = array();
 
-            // Build assigned_to_name from first/last name or display name or username
-            if ($note->assigned_to_id) {
-                $note->assigned_to_name = $this->get_user_display_name($note->assigned_to_id);
-            } else {
-                $note->assigned_to_name = '';
+        foreach ($notes as $note) {
+            // Notes Manager sees everything
+            if ($is_manager) {
+                $visible = true;
+            }
+            // Note created by current user
+            elseif ($note->user_id == $current_user_id) {
+                $visible = true;
+            }
+            // Note assigned to current user
+            elseif (!empty($note->assigned_to) && $note->assigned_to == $current_user_id) {
+                $visible = true;
+            }
+            // Note not assigned to anyone (general note)
+            elseif (empty($note->assigned_to) || $note->assigned_to == 0) {
+                $visible = true;
+            }
+            // All other notes are hidden
+            else {
+                $visible = false;
             }
 
-            // content is already sanitized with wp_kses_post on input
+            if ($visible) {
+                // Build better display names using first/last names with fallback
+                $note->user_name = esc_html($note->user_name);
+                $note->element_selector = esc_attr($note->element_selector);
+                $note->assigned_to_username = esc_html($note->assigned_to_username);
+
+                // Build assigned_to_name from first/last name or display name or username
+                if ($note->assigned_to_id) {
+                    $note->assigned_to_name = $this->get_user_display_name($note->assigned_to_id);
+                } else {
+                    $note->assigned_to_name = '';
+                }
+
+                $visible_notes[] = $note;
+            }
         }
 
-        wp_send_json_success($notes);
+        wp_send_json_success($visible_notes);
     }
     
     /**
@@ -301,9 +345,44 @@ class PageNotes {
         );
 
         $result = $wpdb->insert($table_name, $data);
-        
+
         if ($result) {
             $note_id = $wpdb->insert_id;
+
+            // Check if instant email is enabled and note is assigned
+            $instant_email = get_option('page_notes_instant_email', '0');
+            if ($instant_email === '1' && !empty($assigned_to)) {
+                // Send notification immediately
+                $assignee = get_user_by('id', $assigned_to);
+                if ($assignee && !empty($assignee->user_email)) {
+                    $assignee_name = $this->get_user_display_name($assigned_to);
+
+                    // Create a note object for the email
+                    $note_for_email = $wpdb->get_row($wpdb->prepare(
+                        "SELECT n.*,
+                            creator.ID as creator_id
+                        FROM $table_name n
+                        LEFT JOIN {$wpdb->users} creator ON n.user_id = creator.ID
+                        WHERE n.id = %d",
+                        $note_id
+                    ));
+
+                    if ($note_for_email) {
+                        $this->send_notification_email(
+                            $assignee->user_email,
+                            $assignee_name,
+                            array($note_for_email)
+                        );
+
+                        // Mark as sent
+                        $wpdb->update(
+                            $table_name,
+                            array('notification_sent' => 1),
+                            array('id' => $note_id)
+                        );
+                    }
+                }
+            }
             $note = $wpdb->get_row($wpdb->prepare(
                 "SELECT n.*,
                     u.display_name as user_name,
@@ -679,6 +758,9 @@ class PageNotes {
      */
     public function register_settings() {
         register_setting('page_notes_settings', 'page_notes_allowed_roles');
+        register_setting('page_notes_settings', 'page_notes_manager_user_id');
+        register_setting('page_notes_settings', 'page_notes_instant_email');
+        register_setting('page_notes_settings', 'page_notes_auto_send_interval');
     }
 
     /**
@@ -740,6 +822,88 @@ class PageNotes {
                                         Administrators always have access to Page Notes and cannot be disabled.
                                     </p>
                                 </fieldset>
+                            </td>
+                        </tr>
+                    </table>
+                </div>
+
+                <div class="card" style="margin-top: 20px;">
+                    <h2>Notes Manager</h2>
+                    <p>Select a user who can see ALL notes (like a project manager). This user will see every note regardless of assignment. All other users only see notes they created, notes assigned to them, or unassigned notes.</p>
+
+                    <table class="form-table">
+                        <tr>
+                            <th scope="row">Notes Manager</th>
+                            <td>
+                                <?php
+                                $manager_user_id = get_option('page_notes_manager_user_id', '');
+                                $allowed_roles = get_option('page_notes_allowed_roles', array('administrator'));
+
+                                // Get all users with allowed roles
+                                $args = array(
+                                    'role__in' => $allowed_roles,
+                                    'orderby' => 'display_name',
+                                    'order' => 'ASC'
+                                );
+                                $user_query = new WP_User_Query($args);
+                                $users = $user_query->get_results();
+                                ?>
+                                <select name="page_notes_manager_user_id" id="page_notes_manager_user_id">
+                                    <option value="">None (no user sees all notes)</option>
+                                    <?php foreach ($users as $user) : ?>
+                                        <?php
+                                        $display_name = $this->get_user_display_name($user->ID);
+                                        $username = $user->user_login;
+                                        ?>
+                                        <option value="<?php echo esc_attr($user->ID); ?>" <?php selected($manager_user_id, $user->ID); ?>>
+                                            <?php echo esc_html($display_name . ' (@' . $username . ')'); ?>
+                                        </option>
+                                    <?php endforeach; ?>
+                                </select>
+                                <p class="description">
+                                    The selected user will have access to all notes on all pages, regardless of who created or is assigned to them. Useful for project managers or team leads.
+                                </p>
+                            </td>
+                        </tr>
+                    </table>
+                </div>
+
+                <div class="card" style="margin-top: 20px;">
+                    <h2>Email Notifications</h2>
+                    <p>Configure how and when email notifications are sent when users are mentioned in notes.</p>
+
+                    <table class="form-table">
+                        <tr>
+                            <th scope="row">Send Emails Immediately</th>
+                            <td>
+                                <?php
+                                $instant_email = get_option('page_notes_instant_email', '0');
+                                ?>
+                                <label for="page_notes_instant_email">
+                                    <input type="checkbox" name="page_notes_instant_email" id="page_notes_instant_email" value="1" <?php checked($instant_email, '1'); ?> />
+                                    Send email immediately when a user is mentioned with @username
+                                </label>
+                                <p class="description">
+                                    When enabled, emails are sent instantly (like Elementor). When disabled, notifications are batched and sent manually or automatically based on the schedule below.
+                                </p>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th scope="row">Auto-send Pending Notifications</th>
+                            <td>
+                                <?php
+                                $auto_send_interval = get_option('page_notes_auto_send_interval', '4hours');
+                                ?>
+                                <select name="page_notes_auto_send_interval" id="page_notes_auto_send_interval">
+                                    <option value="never" <?php selected($auto_send_interval, 'never'); ?>>Never (manual send only)</option>
+                                    <option value="1hour" <?php selected($auto_send_interval, '1hour'); ?>>Every 1 hour</option>
+                                    <option value="4hours" <?php selected($auto_send_interval, '4hours'); ?>>Every 4 hours (recommended)</option>
+                                    <option value="8hours" <?php selected($auto_send_interval, '8hours'); ?>>Every 8 hours</option>
+                                    <option value="daily" <?php selected($auto_send_interval, 'daily'); ?>>Once daily</option>
+                                </select>
+                                <p class="description">
+                                    Automatically sends any pending notifications on this schedule. This ensures notifications don't get forgotten. Users can also manually send notifications anytime using the "Send Notifications" button in the Page Notes panel.
+                                </p>
                             </td>
                         </tr>
                     </table>
@@ -887,6 +1051,428 @@ class PageNotes {
         }
 
         wp_send_json_success($results);
+    }
+
+    /**
+     * AJAX: Manually send pending notifications
+     */
+    public function ajax_send_notifications() {
+        check_ajax_referer('page_notes_nonce', 'nonce');
+
+        $result = $this->send_pending_notifications();
+
+        if ($result['recipients'] > 0) {
+            wp_send_json_success(array(
+                'message' => sprintf(
+                    'Sent %d notification%s to %d recipient%s',
+                    $result['sent'],
+                    $result['sent'] === 1 ? '' : 's',
+                    $result['recipients'],
+                    $result['recipients'] === 1 ? '' : 's'
+                ),
+                'sent' => $result['sent'],
+                'recipients' => $result['recipients']
+            ));
+        } else {
+            wp_send_json_success(array(
+                'message' => 'No pending notifications to send',
+                'sent' => 0,
+                'recipients' => 0
+            ));
+        }
+    }
+
+    /**
+     * Send pending email notifications
+     * Groups notes by recipient and page for a clean email experience
+     */
+    public function send_pending_notifications() {
+        global $wpdb;
+        $table_name = $wpdb->prefix . 'page_notes';
+
+        // Get all notes with pending notifications (assigned to someone but notification not sent)
+        $pending_notes = $wpdb->get_results(
+            "SELECT n.*,
+                creator.display_name as creator_display_name,
+                creator.user_login as creator_username,
+                creator.ID as creator_id,
+                assignee.user_email as assignee_email,
+                assignee.ID as assignee_id
+            FROM $table_name n
+            LEFT JOIN {$wpdb->users} creator ON n.user_id = creator.ID
+            LEFT JOIN {$wpdb->users} assignee ON n.assigned_to = assignee.ID
+            WHERE n.assigned_to IS NOT NULL
+            AND n.assigned_to > 0
+            AND n.notification_sent = 0
+            ORDER BY assignee.ID, n.page_url, n.created_at ASC"
+        );
+
+        if (empty($pending_notes)) {
+            return array('sent' => 0, 'recipients' => 0);
+        }
+
+        // Group notes by recipient
+        $notes_by_recipient = array();
+        foreach ($pending_notes as $note) {
+            if (empty($note->assignee_email)) {
+                continue; // Skip if assignee doesn't exist
+            }
+
+            if (!isset($notes_by_recipient[$note->assignee_id])) {
+                $notes_by_recipient[$note->assignee_id] = array(
+                    'email' => $note->assignee_email,
+                    'name' => $this->get_user_display_name($note->assignee_id),
+                    'notes' => array()
+                );
+            }
+
+            $notes_by_recipient[$note->assignee_id]['notes'][] = $note;
+        }
+
+        // Send one email per recipient
+        $sent_count = 0;
+        $note_ids_to_mark = array();
+
+        foreach ($notes_by_recipient as $recipient_id => $recipient_data) {
+            $email_sent = $this->send_notification_email(
+                $recipient_data['email'],
+                $recipient_data['name'],
+                $recipient_data['notes']
+            );
+
+            if ($email_sent) {
+                $sent_count++;
+                // Collect note IDs to mark as sent
+                foreach ($recipient_data['notes'] as $note) {
+                    $note_ids_to_mark[] = intval($note->id);
+                }
+            }
+        }
+
+        // Mark all sent notifications
+        if (!empty($note_ids_to_mark)) {
+            $ids_string = implode(',', $note_ids_to_mark);
+            $wpdb->query("UPDATE $table_name SET notification_sent = 1 WHERE id IN ($ids_string)");
+        }
+
+        return array(
+            'sent' => count($note_ids_to_mark),
+            'recipients' => $sent_count
+        );
+    }
+
+    /**
+     * Send notification email to a single recipient
+     * Groups their notes by page for better readability
+     */
+    private function send_notification_email($to_email, $to_name, $notes) {
+        // Group notes by page
+        $notes_by_page = array();
+        foreach ($notes as $note) {
+            $page_key = $note->page_url;
+            if (!isset($notes_by_page[$page_key])) {
+                $notes_by_page[$page_key] = array(
+                    'page_id' => $note->page_id,
+                    'page_url' => $note->page_url,
+                    'page_title' => '',
+                    'notes' => array()
+                );
+            }
+            $notes_by_page[$page_key]['notes'][] = $note;
+        }
+
+        // Get page titles
+        foreach ($notes_by_page as $page_key => &$page_data) {
+            $title = '';
+
+            // Try to get post by URL first
+            if (!empty($page_data['page_url'])) {
+                $post_id = url_to_postid($page_data['page_url']);
+                if ($post_id > 0) {
+                    $title = get_the_title($post_id);
+                }
+            }
+
+            // Try using stored page_id
+            if (empty($title) && $page_data['page_id'] > 0) {
+                $post = get_post($page_data['page_id']);
+                if ($post && $post->post_status !== 'trash') {
+                    $title = get_the_title($page_data['page_id']);
+                }
+            }
+
+            // Extract from URL path
+            if (empty($title) && !empty($page_data['page_url'])) {
+                $parsed = parse_url($page_data['page_url']);
+                if (isset($parsed['path'])) {
+                    $path = trim($parsed['path'], '/');
+                    $title = $path ? ucwords(str_replace(['-', '_', '/'], ' ', $path)) : 'Home';
+                }
+            }
+
+            $page_data['page_title'] = $title ?: 'Unknown Page';
+        }
+        unset($page_data); // Break reference
+
+        // Count total notes
+        $total_notes = count($notes);
+        $page_count = count($notes_by_page);
+
+        // Get site name for subject line
+        $site_name = get_bloginfo('name');
+
+        // Build email subject
+        $subject = sprintf('You have %d new Page Note%s on %s',
+            $total_notes,
+            $total_notes === 1 ? '' : 's',
+            $site_name
+        );
+
+        // Build email body
+        $message = $this->build_email_template($to_name, $notes_by_page, $total_notes, $page_count);
+
+        // Email headers
+        $headers = array(
+            'Content-Type: text/html; charset=UTF-8',
+            'From: ' . get_bloginfo('name') . ' <' . get_option('admin_email') . '>'
+        );
+
+        // Send email
+        return wp_mail($to_email, $subject, $message, $headers);
+    }
+
+    /**
+     * Build HTML email template
+     */
+    private function build_email_template($to_name, $notes_by_page, $total_notes, $page_count) {
+        $site_name = get_bloginfo('name');
+        $site_url = get_site_url();
+
+        ob_start();
+        ?>
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <style>
+                body {
+                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+                    line-height: 1.6;
+                    color: #333;
+                    max-width: 600px;
+                    margin: 0 auto;
+                    padding: 20px;
+                }
+                .header {
+                    background: #0073aa;
+                    color: white;
+                    padding: 20px;
+                    border-radius: 5px 5px 0 0;
+                }
+                .header h1 {
+                    margin: 0;
+                    font-size: 24px;
+                }
+                .content {
+                    background: #f9f9f9;
+                    padding: 20px;
+                    border: 1px solid #ddd;
+                    border-top: none;
+                }
+                .greeting {
+                    font-size: 16px;
+                    margin-bottom: 20px;
+                }
+                .divider {
+                    border-top: 2px solid #0073aa;
+                    margin: 20px 0;
+                }
+                .page-section {
+                    margin-bottom: 25px;
+                }
+                .page-title {
+                    font-size: 18px;
+                    font-weight: 600;
+                    color: #0073aa;
+                    margin-bottom: 10px;
+                }
+                .page-link {
+                    display: inline-block;
+                    color: #0073aa;
+                    text-decoration: none;
+                    font-size: 14px;
+                    margin-bottom: 10px;
+                }
+                .page-link:hover {
+                    text-decoration: underline;
+                }
+                .note-item {
+                    background: white;
+                    padding: 12px;
+                    margin-bottom: 10px;
+                    border-left: 3px solid #0073aa;
+                    border-radius: 3px;
+                }
+                .note-content {
+                    margin: 0 0 8px 0;
+                    font-size: 14px;
+                }
+                .note-author {
+                    font-size: 12px;
+                    color: #666;
+                    font-style: italic;
+                }
+                .footer {
+                    background: #f9f9f9;
+                    padding: 15px 20px;
+                    border: 1px solid #ddd;
+                    border-top: none;
+                    border-radius: 0 0 5px 5px;
+                    text-align: center;
+                    font-size: 12px;
+                    color: #666;
+                }
+                .footer a {
+                    color: #0073aa;
+                    text-decoration: none;
+                }
+            </style>
+        </head>
+        <body>
+            <div class="header">
+                <h1>Page Notes</h1>
+            </div>
+
+            <div class="content">
+                <div class="greeting">
+                    Hi <?php echo esc_html($to_name); ?>,
+                </div>
+
+                <p>You've been mentioned in <?php echo esc_html($total_notes); ?> note<?php echo $total_notes === 1 ? '' : 's'; ?> across <?php echo esc_html($page_count); ?> page<?php echo $page_count === 1 ? '' : 's'; ?>:</p>
+
+                <div class="divider"></div>
+
+                <?php foreach ($notes_by_page as $page_data) : ?>
+                    <div class="page-section">
+                        <div class="page-title"><?php echo esc_html($page_data['page_title']); ?></div>
+                        <a href="<?php echo esc_url($page_data['page_url']); ?>" class="page-link">View Page &rarr;</a>
+
+                        <?php foreach ($page_data['notes'] as $note) : ?>
+                            <?php
+                            $creator_name = $this->get_user_display_name($note->creator_id);
+                            // Strip @mentions from displayed content
+                            $display_content = preg_replace('/@[\w-]+/', '', $note->content);
+                            $display_content = trim($display_content);
+                            ?>
+                            <div class="note-item">
+                                <p class="note-content"><?php echo nl2br(esc_html($display_content)); ?></p>
+                                <div class="note-author">— <?php echo esc_html($creator_name); ?></div>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+
+            <div class="footer">
+                <p>This is an automated notification from <a href="<?php echo esc_url($site_url); ?>"><?php echo esc_html($site_name); ?></a></p>
+                <p>View all your notes in the Page Notes panel when you visit the site.</p>
+            </div>
+        </body>
+        </html>
+        <?php
+        return ob_get_clean();
+    }
+
+    /**
+     * Schedule cron job based on settings
+     * Called on admin_init to ensure cron is properly scheduled
+     */
+    public function schedule_cron_if_needed() {
+        $auto_send_interval = get_option('page_notes_auto_send_interval', '4hours');
+
+        // If set to 'never', clear any existing schedule
+        if ($auto_send_interval === 'never') {
+            $timestamp = wp_next_scheduled('page_notes_auto_send_notifications');
+            if ($timestamp) {
+                wp_unschedule_event($timestamp, 'page_notes_auto_send_notifications');
+            }
+            return;
+        }
+
+        // Map interval to seconds
+        $intervals = array(
+            '1hour' => HOUR_IN_SECONDS,
+            '4hours' => 4 * HOUR_IN_SECONDS,
+            '8hours' => 8 * HOUR_IN_SECONDS,
+            'daily' => DAY_IN_SECONDS
+        );
+
+        $interval_seconds = isset($intervals[$auto_send_interval]) ? $intervals[$auto_send_interval] : 4 * HOUR_IN_SECONDS;
+
+        // Check if already scheduled
+        $timestamp = wp_next_scheduled('page_notes_auto_send_notifications');
+
+        // Get stored interval to detect changes
+        $stored_interval = get_option('page_notes_cron_interval', '');
+
+        // If interval changed or not scheduled, reschedule
+        if (!$timestamp || $stored_interval !== $auto_send_interval) {
+            // Clear existing schedule
+            if ($timestamp) {
+                wp_unschedule_event($timestamp, 'page_notes_auto_send_notifications');
+            }
+
+            // Schedule new event
+            wp_schedule_event(time() + $interval_seconds, $this->get_cron_recurrence($auto_send_interval), 'page_notes_auto_send_notifications');
+
+            // Store the current interval
+            update_option('page_notes_cron_interval', $auto_send_interval);
+        }
+    }
+
+    /**
+     * Get WordPress cron recurrence name for our intervals
+     */
+    private function get_cron_recurrence($interval) {
+        $recurrence_map = array(
+            '1hour' => 'hourly',
+            '4hours' => 'page_notes_4hours',
+            '8hours' => 'page_notes_8hours',
+            'daily' => 'daily'
+        );
+
+        return isset($recurrence_map[$interval]) ? $recurrence_map[$interval] : 'page_notes_4hours';
+    }
+
+    /**
+     * Add custom cron schedules
+     * WordPress only has hourly and daily by default
+     */
+    public function add_cron_schedules($schedules) {
+        $schedules['page_notes_4hours'] = array(
+            'interval' => 4 * HOUR_IN_SECONDS,
+            'display' => __('Every 4 hours')
+        );
+        $schedules['page_notes_8hours'] = array(
+            'interval' => 8 * HOUR_IN_SECONDS,
+            'display' => __('Every 8 hours')
+        );
+        return $schedules;
+    }
+
+    /**
+     * Cron job callback - send pending notifications
+     */
+    public function cron_send_notifications() {
+        // Only run if auto-send is enabled (not 'never')
+        $auto_send_interval = get_option('page_notes_auto_send_interval', '4hours');
+        if ($auto_send_interval === 'never') {
+            return;
+        }
+
+        // Send pending notifications
+        $this->send_pending_notifications();
     }
 }
 

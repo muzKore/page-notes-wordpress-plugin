@@ -69,7 +69,10 @@
                 <div class="page-notes-panel">
                     <div class="page-notes-header">
                         <h3><span class="page-notes-drag-icon">⋮⋮</span>Page Notes</h3>
-                        <button class="page-notes-close">&times;</button>
+                        <div class="page-notes-header-actions">
+                            <button class="page-notes-send-notifications" title="Send pending email notifications">📧 Send Notifications</button>
+                            <button class="page-notes-close">&times;</button>
+                        </div>
                     </div>
                     <div class="page-notes-content">
                         <!-- Pages with notes section -->
@@ -135,6 +138,14 @@
             if (closeButton) {
                 closeButton.addEventListener('click', function() {
                     self.togglePanel();
+                });
+            }
+
+            // When user clicks "Send Notifications" button
+            const sendNotificationsButton = document.querySelector('.page-notes-send-notifications');
+            if (sendNotificationsButton) {
+                sendNotificationsButton.addEventListener('click', function() {
+                    self.sendNotifications();
                 });
             }
             
@@ -1142,6 +1153,59 @@
         stripMentions: function(content) {
             // Remove @username mentions (username can have letters, numbers, underscore, hyphen)
             return content.replace(/@[\w-]+/g, '').trim();
+        },
+
+        /**
+         * Send pending email notifications
+         */
+        sendNotifications: function() {
+            const self = this;
+            const button = document.querySelector('.page-notes-send-notifications');
+
+            // Disable button during request
+            if (button) {
+                button.disabled = true;
+                button.textContent = '📧 Sending...';
+            }
+
+            // Make AJAX request to send notifications
+            fetch(pageNotesData.ajaxUrl, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: new URLSearchParams({
+                    action: 'pn_send_notifications',
+                    nonce: pageNotesData.nonce
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    // Show success message
+                    alert(data.data.message);
+
+                    // Re-enable button
+                    if (button) {
+                        button.disabled = false;
+                        button.textContent = '📧 Send Notifications';
+                    }
+                } else {
+                    alert('Error sending notifications: ' + (data.data || 'Unknown error'));
+                    if (button) {
+                        button.disabled = false;
+                        button.textContent = '📧 Send Notifications';
+                    }
+                }
+            })
+            .catch(error => {
+                console.error('Error sending notifications:', error);
+                alert('Failed to send notifications. Please try again.');
+                if (button) {
+                    button.disabled = false;
+                    button.textContent = '📧 Send Notifications';
+                }
+            });
         }
     };
     
