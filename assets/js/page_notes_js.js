@@ -49,6 +49,12 @@
             // Set up all our event listeners (buttons, clicks, etc.)
             this.bindEvents();
 
+            // Setup @mention autocomplete on the textarea
+            const textarea = document.querySelector('.note-form-textarea');
+            if (textarea) {
+                this.setupMentionAutocomplete(textarea);
+            }
+
             // Load the list of pages with notes
             this.loadPagesWithNotes();
         },
@@ -84,7 +90,10 @@
                 <div class="note-form-overlay">
                     <div class="note-form">
                         <h3>Add Note</h3>
-                        <textarea class="note-form-textarea" placeholder="Enter your note..."></textarea>
+                        <div class="note-form-textarea-wrapper">
+                            <textarea class="note-form-textarea" placeholder="Enter your note... Type @ to mention someone"></textarea>
+                            <div class="mention-autocomplete"></div>
+                        </div>
                         <div class="note-form-actions">
                             <button class="note-form-btn note-form-btn-cancel">Cancel</button>
                             <button class="note-form-btn note-form-btn-save">Save Note</button>
@@ -718,6 +727,11 @@
                 // Create a Date object and format it nicely
                 const date = new Date(note.created_at).toLocaleDateString();
 
+                // Show assignment badge if note is assigned
+                const assignedBadge = note.assigned_to && note.assigned_to_name
+                    ? `<div class="note-assigned-badge">Assigned to: ${note.assigned_to_name}</div>`
+                    : '';
+
                 html += `
                     <div class="note-item ${completedClass}" data-note-id="${note.id}" data-selector="${note.element_selector}">
                         <div class="note-header">
@@ -725,6 +739,7 @@
                             <span class="note-date">${date}</span>
                         </div>
                         <div class="note-content">${note.content}</div>
+                        ${assignedBadge}
                         <div class="note-actions">
                             <button class="note-btn note-btn-edit">Edit</button>
                             <button class="note-btn note-btn-complete">${note.status === 'completed' ? 'Reopen' : 'Complete'}</button>
@@ -952,6 +967,166 @@
             .catch(error => {
                 console.error('Error:', error);
                 alert('Failed to delete note. Please check your connection and try again.');
+            });
+        },
+
+        /**
+         * SETUP @MENTION AUTOCOMPLETE
+         * Attaches autocomplete to a textarea for @mentions
+         */
+        setupMentionAutocomplete: function(textarea) {
+            const self = this;
+            const autocompleteDiv = document.querySelector('.mention-autocomplete');
+            let currentSearch = '';
+            let selectedIndex = -1;
+
+            textarea.addEventListener('input', function(e) {
+                const value = textarea.value;
+                const cursorPos = textarea.selectionStart;
+
+                // Find if there's an @ before the cursor
+                const textBeforeCursor = value.substring(0, cursorPos);
+                const match = textBeforeCursor.match(/@(\w*)$/);
+
+                if (match) {
+                    // User is typing a mention
+                    currentSearch = match[1];
+                    self.searchUsers(currentSearch, autocompleteDiv, textarea);
+                } else {
+                    // Hide autocomplete
+                    autocompleteDiv.style.display = 'none';
+                    selectedIndex = -1;
+                }
+            });
+
+            // Handle keyboard navigation
+            textarea.addEventListener('keydown', function(e) {
+                const items = autocompleteDiv.querySelectorAll('.mention-item');
+
+                if (items.length === 0) return;
+
+                if (e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    selectedIndex = Math.min(selectedIndex + 1, items.length - 1);
+                    self.updateSelection(items, selectedIndex);
+                } else if (e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    selectedIndex = Math.max(selectedIndex - 1, 0);
+                    self.updateSelection(items, selectedIndex);
+                } else if (e.key === 'Enter' && selectedIndex >= 0 && autocompleteDiv.style.display !== 'none') {
+                    e.preventDefault();
+                    items[selectedIndex].click();
+                } else if (e.key === 'Escape') {
+                    autocompleteDiv.style.display = 'none';
+                    selectedIndex = -1;
+                }
+            });
+        },
+
+        /**
+         * SEARCH USERS
+         * Search for users and display autocomplete results
+         */
+        searchUsers: function(search, autocompleteDiv, textarea) {
+            const self = this;
+
+            if (search.length === 0) {
+                autocompleteDiv.style.display = 'none';
+                return;
+            }
+
+            // AJAX call to search users
+            const formData = new FormData();
+            formData.append('action', 'pn_search_users');
+            formData.append('nonce', pageNotesData.nonce);
+            formData.append('search', search);
+
+            fetch(pageNotesData.ajaxUrl, {
+                method: 'POST',
+                body: formData,
+                credentials: 'same-origin'
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success && data.data.length > 0) {
+                    self.displayUserResults(data.data, autocompleteDiv, textarea);
+                } else {
+                    autocompleteDiv.style.display = 'none';
+                }
+            })
+            .catch(error => {
+                console.error('Error searching users:', error);
+            });
+        },
+
+        /**
+         * DISPLAY USER RESULTS
+         * Show the autocomplete dropdown with user results
+         */
+        displayUserResults: function(users, autocompleteDiv, textarea) {
+            const self = this;
+            let html = '';
+
+            users.forEach(function(user, index) {
+                html += `
+                    <div class="mention-item" data-username="${user.username}" data-index="${index}">
+                        <strong>@${user.username}</strong>
+                        <span>${user.display_name}</span>
+                    </div>
+                `;
+            });
+
+            autocompleteDiv.innerHTML = html;
+            autocompleteDiv.style.display = 'block';
+
+            // Add click handlers to items
+            const items = autocompleteDiv.querySelectorAll('.mention-item');
+            items.forEach(function(item) {
+                item.addEventListener('click', function() {
+                    self.insertMention(item.getAttribute('data-username'), textarea, autocompleteDiv);
+                });
+            });
+        },
+
+        /**
+         * INSERT MENTION
+         * Insert the selected @mention into the textarea
+         */
+        insertMention: function(username, textarea, autocompleteDiv) {
+            const value = textarea.value;
+            const cursorPos = textarea.selectionStart;
+
+            // Find the @ before cursor
+            const textBeforeCursor = value.substring(0, cursorPos);
+            const match = textBeforeCursor.match(/@(\w*)$/);
+
+            if (match) {
+                const mentionStart = cursorPos - match[0].length;
+                const newValue = value.substring(0, mentionStart) + '@' + username + ' ' + value.substring(cursorPos);
+
+                textarea.value = newValue;
+
+                // Set cursor after the inserted mention
+                const newCursorPos = mentionStart + username.length + 2; // +2 for @ and space
+                textarea.setSelectionRange(newCursorPos, newCursorPos);
+                textarea.focus();
+            }
+
+            // Hide autocomplete
+            autocompleteDiv.style.display = 'none';
+        },
+
+        /**
+         * UPDATE SELECTION
+         * Highlight the selected item in autocomplete
+         */
+        updateSelection: function(items, selectedIndex) {
+            items.forEach(function(item, index) {
+                if (index === selectedIndex) {
+                    item.classList.add('selected');
+                } else {
+                    item.classList.remove('selected');
+                }
             });
         }
     };

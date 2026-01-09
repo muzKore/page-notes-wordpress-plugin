@@ -507,3 +507,78 @@
   animation: notePulse 1.5s ease-in-out 2;
   border-left: 3px solid #ff9800;
 }
+
+/* ============================================
+   @MENTION AUTOCOMPLETE STYLES
+   ============================================ */
+
+.note-form-textarea-wrapper {
+  position: relative;
+}
+
+.mention-autocomplete {
+  display: none;
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  background: white;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  max-height: 200px;
+  overflow-y: auto;
+  z-index: 1000;
+  margin-bottom: 5px;
+}
+
+.mention-item {
+  padding: 8px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid #f0f0f0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: background-color 0.2s;
+}
+
+.mention-item:last-child {
+  border-bottom: none;
+}
+
+.mention-item:hover,
+.mention-item.selected {
+  background-color: #f5f5f5;
+}
+
+.mention-item strong {
+  color: #0073aa;
+  font-weight: 600;
+}
+
+.mention-item span {
+  color: #666;
+  font-size: 0.9em;
+}
+
+/* @Mention styling in note content */
+.note-item-content {
+  word-wrap: break-word;
+}
+
+/* Highlight @mentions in note text */
+.note-item-content {
+  white-space: pre-wrap;
+}
+
+/* Assigned badge */
+.note-assigned-badge {
+  display: inline-block;
+  background: #e8f4f8;
+  color: #0073aa;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  margin-top: 5px;
+}

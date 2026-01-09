@@ -58,6 +58,7 @@ class PageNotes {
         add_action('wp_ajax_pn_update_note', array($this, 'ajax_update_note'));
         add_action('wp_ajax_pn_delete_note', array($this, 'ajax_delete_note'));
         add_action('wp_ajax_pn_get_pages_with_notes', array($this, 'ajax_get_pages_with_notes'));
+        add_action('wp_ajax_pn_search_users', array($this, 'ajax_search_users'));
     }
     
     /**
@@ -205,9 +206,13 @@ class PageNotes {
 
         // Query by both page_id AND page_url to catch notes that might have been stored with different IDs
         $notes = $wpdb->get_results($wpdb->prepare(
-            "SELECT n.*, u.display_name as user_name
+            "SELECT n.*,
+                u.display_name as user_name,
+                a.display_name as assigned_to_name,
+                a.user_login as assigned_to_username
             FROM $table_name n
             LEFT JOIN {$wpdb->users} u ON n.user_id = u.ID
+            LEFT JOIN {$wpdb->users} a ON n.assigned_to = a.ID
             WHERE (n.page_id = %d OR n.page_url = %s)
             ORDER BY n.created_at ASC",
             $page_id,
@@ -218,6 +223,8 @@ class PageNotes {
         foreach ($notes as $note) {
             $note->user_name = esc_html($note->user_name);
             $note->element_selector = esc_attr($note->element_selector);
+            $note->assigned_to_name = esc_html($note->assigned_to_name);
+            $note->assigned_to_username = esc_html($note->assigned_to_username);
             // content is already sanitized with wp_kses_post on input
         }
 
@@ -272,12 +279,16 @@ class PageNotes {
             }
         }
 
+        // Extract @mention and get assigned user ID
+        $assigned_to = $this->extract_mention_user_id($content);
+
         $data = array(
             'page_id' => $page_id,
             'page_url' => $page_url,
             'element_selector' => $element_selector,
             'content' => $content,
             'user_id' => get_current_user_id(),
+            'assigned_to' => $assigned_to,
             'parent_id' => isset($_POST['parent_id']) ? intval($_POST['parent_id']) : 0
         );
 
@@ -286,9 +297,13 @@ class PageNotes {
         if ($result) {
             $note_id = $wpdb->insert_id;
             $note = $wpdb->get_row($wpdb->prepare(
-                "SELECT n.*, u.display_name as user_name
+                "SELECT n.*,
+                    u.display_name as user_name,
+                    a.display_name as assigned_to_name,
+                    a.user_login as assigned_to_username
                 FROM $table_name n
                 LEFT JOIN {$wpdb->users} u ON n.user_id = u.ID
+                LEFT JOIN {$wpdb->users} a ON n.assigned_to = a.ID
                 WHERE n.id = %d",
                 $note_id
             ));
@@ -297,6 +312,8 @@ class PageNotes {
             if ($note) {
                 $note->user_name = esc_html($note->user_name);
                 $note->element_selector = esc_attr($note->element_selector);
+                $note->assigned_to_name = esc_html($note->assigned_to_name);
+                $note->assigned_to_username = esc_html($note->assigned_to_username);
             }
 
             wp_send_json_success($note);
@@ -731,6 +748,70 @@ class PageNotes {
             </div>
         </div>
         <?php
+    }
+
+    /**
+     * Extract @mention from note content and return user ID
+     * Returns the first mentioned user's ID or NULL if no mention found
+     */
+    private function extract_mention_user_id($content) {
+        // Match @username pattern (letters, numbers, underscore, hyphen)
+        if (preg_match('/@([\w-]+)/', $content, $matches)) {
+            $username = $matches[1];
+
+            // Look up user by username
+            $user = get_user_by('login', $username);
+
+            if ($user && $user->ID) {
+                return $user->ID;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * AJAX: Search users for @mention autocomplete
+     */
+    public function ajax_search_users() {
+        check_ajax_referer('page_notes_nonce', 'nonce');
+
+        $search = isset($_POST['search']) ? sanitize_text_field($_POST['search']) : '';
+
+        if (strlen($search) < 1) {
+            wp_send_json_success(array());
+            return;
+        }
+
+        // Get allowed roles
+        $allowed_roles = get_option('page_notes_allowed_roles', array('administrator'));
+        if (!is_array($allowed_roles)) {
+            $allowed_roles = array('administrator');
+        }
+
+        // Search for users with allowed roles
+        $args = array(
+            'search' => '*' . $search . '*',
+            'search_columns' => array('user_login', 'display_name'),
+            'role__in' => $allowed_roles,
+            'number' => 10,
+            'orderby' => 'display_name',
+            'order' => 'ASC'
+        );
+
+        $user_query = new WP_User_Query($args);
+        $users = $user_query->get_results();
+
+        $results = array();
+        foreach ($users as $user) {
+            $results[] = array(
+                'id' => $user->ID,
+                'username' => $user->user_login,
+                'display_name' => $user->display_name
+            );
+        }
+
+        wp_send_json_success($results);
     }
 }
 
