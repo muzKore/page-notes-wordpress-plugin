@@ -357,6 +357,8 @@
                 if (adminBarButton) adminBarButton.classList.add('active');
                 // Panel just opened - load notes for current page
                 this.loadCurrentPageNotes();
+                // Check for pending notifications and update button visibility
+                this.updateNotificationButtonVisibility();
                 // Enter "note mode" where user can click elements
                 this.enableNoteMode();
             } else {
@@ -506,6 +508,8 @@
                         this.highlightNewNote(newNoteId);
                     });
                     this.loadPagesWithNotes();
+                    // Update notification button visibility (new note might have @mention)
+                    this.updateNotificationButtonVisibility();
                 } else {
                     // Something went wrong - show the error message from server
                     const errorMsg = data.data || 'Unknown error occurred';
@@ -1156,6 +1160,39 @@
         },
 
         /**
+         * Check if there are pending notifications and update button visibility
+         */
+        updateNotificationButtonVisibility: function() {
+            const button = document.querySelector('.page-notes-send-notifications');
+            if (!button) return;
+
+            // Make AJAX request to check for pending notifications
+            fetch(pageNotesData.ajaxUrl, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: new URLSearchParams({
+                    action: 'pn_check_pending_notifications',
+                    nonce: pageNotesData.nonce
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success && data.data.has_pending) {
+                    button.style.display = '';
+                } else {
+                    button.style.display = 'none';
+                }
+            })
+            .catch(error => {
+                console.error('Error checking notifications:', error);
+                // On error, hide the button to be safe
+                button.style.display = 'none';
+            });
+        },
+
+        /**
          * Send pending email notifications
          */
         sendNotifications: function() {
@@ -1185,11 +1222,14 @@
                     // Show success message
                     alert(data.data.message);
 
-                    // Re-enable button
+                    // Re-enable and update button visibility
                     if (button) {
                         button.disabled = false;
                         button.textContent = '📧 Send Notifications';
                     }
+
+                    // Update button visibility after sending
+                    self.updateNotificationButtonVisibility();
                 } else {
                     alert('Error sending notifications: ' + (data.data || 'Unknown error'));
                     if (button) {

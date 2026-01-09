@@ -60,6 +60,7 @@ class PageNotes {
         add_action('wp_ajax_pn_get_pages_with_notes', array($this, 'ajax_get_pages_with_notes'));
         add_action('wp_ajax_pn_search_users', array($this, 'ajax_search_users'));
         add_action('wp_ajax_pn_send_notifications', array($this, 'ajax_send_notifications'));
+        add_action('wp_ajax_pn_check_pending_notifications', array($this, 'ajax_check_pending_notifications'));
 
         // Cron job for auto-sending notifications
         add_filter('cron_schedules', array($this, 'add_cron_schedules'));
@@ -1080,6 +1081,30 @@ class PageNotes {
                 'recipients' => 0
             ));
         }
+    }
+
+    /**
+     * AJAX: Check if there are pending notifications
+     */
+    public function ajax_check_pending_notifications() {
+        check_ajax_referer('page_notes_nonce', 'nonce');
+
+        global $wpdb;
+        $table_name = $wpdb->prefix . 'page_notes';
+
+        // Count pending notifications
+        $count = $wpdb->get_var(
+            "SELECT COUNT(*)
+            FROM $table_name
+            WHERE assigned_to IS NOT NULL
+            AND assigned_to > 0
+            AND notification_sent = 0"
+        );
+
+        wp_send_json_success(array(
+            'has_pending' => $count > 0,
+            'count' => intval($count)
+        ));
     }
 
     /**
