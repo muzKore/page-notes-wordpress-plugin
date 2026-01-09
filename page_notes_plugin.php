@@ -42,6 +42,12 @@ class PageNotes {
         add_action('wp_enqueue_scripts', array($this, 'enqueue_assets'));
         add_action('admin_enqueue_scripts', array($this, 'enqueue_assets'));
 
+        // User profile hooks
+        add_action('show_user_profile', array($this, 'add_user_profile_fields'));
+        add_action('edit_user_profile', array($this, 'add_user_profile_fields'));
+        add_action('personal_options_update', array($this, 'save_user_profile_fields'));
+        add_action('edit_user_profile_update', array($this, 'save_user_profile_fields'));
+
         // AJAX handlers
         add_action('wp_ajax_pn_get_notes', array($this, 'ajax_get_notes'));
         add_action('wp_ajax_pn_save_note', array($this, 'ajax_save_note'));
@@ -113,11 +119,16 @@ class PageNotes {
      * Add button to admin bar
      */
     public function add_admin_bar_button($wp_admin_bar) {
-        // Only show to users who can edit posts
+        // Only show to users who can edit posts and have Page Notes enabled
         if (!current_user_can('edit_posts')) {
             return;
         }
-        
+
+        // Check if user has Page Notes enabled (default is enabled)
+        if (!$this->is_page_notes_enabled_for_user()) {
+            return;
+        }
+
         $args = array(
             'id'    => 'page-notes-toggle',
             'title' => '<span class="ab-icon dashicons dashicons-sticky"></span><span class="ab-label">Notes</span>',
@@ -134,11 +145,16 @@ class PageNotes {
      * Enqueue CSS and JavaScript
      */
     public function enqueue_assets() {
-        // Only load for users who can edit posts
+        // Only load for users who can edit posts and have Page Notes enabled
         if (!current_user_can('edit_posts')) {
             return;
         }
-        
+
+        // Check if user has Page Notes enabled (default is enabled)
+        if (!$this->is_page_notes_enabled_for_user()) {
+            return;
+        }
+
         // CSS
         wp_enqueue_style(
             'page-notes-style',
@@ -497,6 +513,82 @@ class PageNotes {
         }
 
         wp_send_json_success($valid_pages);
+    }
+
+    /**
+     * Check if Page Notes is enabled for the current user
+     * Default is enabled (true) if not set
+     */
+    private function is_page_notes_enabled_for_user() {
+        $user_id = get_current_user_id();
+        if (!$user_id) {
+            return false;
+        }
+
+        // Get user meta - default to '1' (enabled) if not set
+        $enabled = get_user_meta($user_id, 'page_notes_enabled', true);
+
+        // If the meta doesn't exist yet, default to enabled
+        if ($enabled === '') {
+            return true;
+        }
+
+        return $enabled === '1' || $enabled === 1 || $enabled === true;
+    }
+
+    /**
+     * Add Page Notes section to user profile page
+     */
+    public function add_user_profile_fields($user) {
+        // Only show to users who can edit posts
+        if (!current_user_can('edit_posts')) {
+            return;
+        }
+
+        // Get current setting (default to enabled)
+        $enabled = get_user_meta($user->ID, 'page_notes_enabled', true);
+        if ($enabled === '') {
+            $enabled = '1'; // Default to enabled
+        }
+        ?>
+        <h2><?php esc_html_e('Page Notes', 'page-notes'); ?></h2>
+        <table class="form-table" role="presentation">
+            <tr>
+                <th scope="row"><?php esc_html_e('Enable Page Notes', 'page-notes'); ?></th>
+                <td>
+                    <fieldset>
+                        <label for="page_notes_enabled">
+                            <input
+                                type="checkbox"
+                                name="page_notes_enabled"
+                                id="page_notes_enabled"
+                                value="1"
+                                <?php checked($enabled, '1'); ?>
+                            />
+                            <?php esc_html_e('Show Page Notes button in admin bar and load Page Notes functionality', 'page-notes'); ?>
+                        </label>
+                        <p class="description">
+                            <?php esc_html_e('Uncheck this to disable Page Notes for your account. You can re-enable it anytime.', 'page-notes'); ?>
+                        </p>
+                    </fieldset>
+                </td>
+            </tr>
+        </table>
+        <?php
+    }
+
+    /**
+     * Save Page Notes user profile fields
+     */
+    public function save_user_profile_fields($user_id) {
+        // Check permissions
+        if (!current_user_can('edit_user', $user_id)) {
+            return false;
+        }
+
+        // Save the checkbox value
+        $enabled = isset($_POST['page_notes_enabled']) ? '1' : '0';
+        update_user_meta($user_id, 'page_notes_enabled', $enabled);
     }
 }
 
