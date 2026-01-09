@@ -106,7 +106,9 @@ class PageNotes {
 
         // Schedule daily reminder cron if not already scheduled
         if (!wp_next_scheduled('page_notes_send_reminders')) {
-            wp_schedule_event(strtotime('tomorrow 9:00 AM'), 'daily', 'page_notes_send_reminders');
+            $reminder_time = get_option('page_notes_reminder_time', '09:00');
+            $timestamp = strtotime('tomorrow ' . $reminder_time);
+            wp_schedule_event($timestamp, 'daily', 'page_notes_send_reminders');
         }
     }
     
@@ -820,6 +822,8 @@ class PageNotes {
         register_setting('page_notes_settings', 'page_notes_manager_user_id');
         register_setting('page_notes_settings', 'page_notes_instant_email');
         register_setting('page_notes_settings', 'page_notes_auto_send_interval');
+        register_setting('page_notes_settings', 'page_notes_reminders_enabled');
+        register_setting('page_notes_settings', 'page_notes_reminder_time');
     }
 
     /**
@@ -962,6 +966,48 @@ class PageNotes {
                                 </select>
                                 <p class="description">
                                     Automatically sends any pending notifications on this schedule. This ensures notifications don't get forgotten. Users can also manually send notifications anytime using the "Send Notifications" button in the Page Notes panel.
+                                </p>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th scope="row">Task Reminders</th>
+                            <td>
+                                <?php
+                                $reminders_enabled = get_option('page_notes_reminders_enabled', '1');
+                                ?>
+                                <label for="page_notes_reminders_enabled">
+                                    <input type="checkbox" name="page_notes_reminders_enabled" id="page_notes_reminders_enabled" value="1" <?php checked($reminders_enabled, '1'); ?> />
+                                    Enable task reminder emails
+                                </label>
+                                <p class="description">
+                                    When enabled, users can opt-in to receive periodic email reminders about incomplete tasks assigned to them. Users configure their reminder preferences in their profile settings.
+                                </p>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th scope="row">Reminder Send Time</th>
+                            <td>
+                                <?php
+                                $reminder_time = get_option('page_notes_reminder_time', '09:00');
+                                ?>
+                                <select name="page_notes_reminder_time" id="page_notes_reminder_time">
+                                    <?php
+                                    // Generate time options in 30-minute blocks
+                                    for ($hour = 0; $hour < 24; $hour++) {
+                                        foreach (array('00', '30') as $minute) {
+                                            $time_value = sprintf('%02d:%s', $hour, $minute);
+                                            $time_label = date('g:i A', strtotime($time_value));
+                                            ?>
+                                            <option value="<?php echo esc_attr($time_value); ?>" <?php selected($reminder_time, $time_value); ?>>
+                                                <?php echo esc_html($time_label); ?>
+                                            </option>
+                                            <?php
+                                        }
+                                    }
+                                    ?>
+                                </select>
+                                <p class="description">
+                                    Daily time when reminder emails should be sent. Reminders are only sent to users who have opted in and have incomplete tasks waiting.
                                 </p>
                             </td>
                         </tr>
@@ -1472,6 +1518,7 @@ class PageNotes {
      * Called on admin_init to ensure cron is properly scheduled
      */
     public function schedule_cron_if_needed() {
+        // Handle notification cron scheduling
         $auto_send_interval = get_option('page_notes_auto_send_interval', '4hours');
 
         // If set to 'never', clear any existing schedule
@@ -1480,37 +1527,76 @@ class PageNotes {
             if ($timestamp) {
                 wp_unschedule_event($timestamp, 'page_notes_auto_send_notifications');
             }
-            return;
+        } else {
+            // Map interval to seconds
+            $intervals = array(
+                '1hour' => HOUR_IN_SECONDS,
+                '4hours' => 4 * HOUR_IN_SECONDS,
+                '8hours' => 8 * HOUR_IN_SECONDS,
+                'daily' => DAY_IN_SECONDS
+            );
+
+            $interval_seconds = isset($intervals[$auto_send_interval]) ? $intervals[$auto_send_interval] : 4 * HOUR_IN_SECONDS;
+
+            // Check if already scheduled
+            $timestamp = wp_next_scheduled('page_notes_auto_send_notifications');
+
+            // Get stored interval to detect changes
+            $stored_interval = get_option('page_notes_cron_interval', '');
+
+            // If interval changed or not scheduled, reschedule
+            if (!$timestamp || $stored_interval !== $auto_send_interval) {
+                // Clear existing schedule
+                if ($timestamp) {
+                    wp_unschedule_event($timestamp, 'page_notes_auto_send_notifications');
+                }
+
+                // Schedule new event
+                wp_schedule_event(time() + $interval_seconds, $this->get_cron_recurrence($auto_send_interval), 'page_notes_auto_send_notifications');
+
+                // Store the current interval
+                update_option('page_notes_cron_interval', $auto_send_interval);
+            }
         }
 
-        // Map interval to seconds
-        $intervals = array(
-            '1hour' => HOUR_IN_SECONDS,
-            '4hours' => 4 * HOUR_IN_SECONDS,
-            '8hours' => 8 * HOUR_IN_SECONDS,
-            'daily' => DAY_IN_SECONDS
-        );
-
-        $interval_seconds = isset($intervals[$auto_send_interval]) ? $intervals[$auto_send_interval] : 4 * HOUR_IN_SECONDS;
+        // Handle reminder cron scheduling
+        $reminders_enabled = get_option('page_notes_reminders_enabled', '1');
+        $reminder_time = get_option('page_notes_reminder_time', '09:00');
 
         // Check if already scheduled
-        $timestamp = wp_next_scheduled('page_notes_auto_send_notifications');
+        $reminder_timestamp = wp_next_scheduled('page_notes_send_reminders');
 
-        // Get stored interval to detect changes
-        $stored_interval = get_option('page_notes_cron_interval', '');
+        // Get stored time to detect changes
+        $stored_reminder_time = get_option('page_notes_reminder_time_stored', '');
 
-        // If interval changed or not scheduled, reschedule
-        if (!$timestamp || $stored_interval !== $auto_send_interval) {
-            // Clear existing schedule
-            if ($timestamp) {
-                wp_unschedule_event($timestamp, 'page_notes_auto_send_notifications');
+        // If reminders are disabled, clear the schedule
+        if ($reminders_enabled !== '1') {
+            if ($reminder_timestamp) {
+                wp_unschedule_event($reminder_timestamp, 'page_notes_send_reminders');
             }
+        } else {
+            // If time changed or not scheduled, reschedule
+            if (!$reminder_timestamp || $stored_reminder_time !== $reminder_time) {
+                // Clear existing schedule
+                if ($reminder_timestamp) {
+                    wp_unschedule_event($reminder_timestamp, 'page_notes_send_reminders');
+                }
 
-            // Schedule new event
-            wp_schedule_event(time() + $interval_seconds, $this->get_cron_recurrence($auto_send_interval), 'page_notes_auto_send_notifications');
+                // Calculate next occurrence
+                $now = current_time('timestamp');
+                $target_time = strtotime(date('Y-m-d', $now) . ' ' . $reminder_time);
 
-            // Store the current interval
-            update_option('page_notes_cron_interval', $auto_send_interval);
+                // If target time has passed today, schedule for tomorrow
+                if ($target_time <= $now) {
+                    $target_time = strtotime('tomorrow ' . $reminder_time);
+                }
+
+                // Schedule new event
+                wp_schedule_event($target_time, 'daily', 'page_notes_send_reminders');
+
+                // Store the current time setting
+                update_option('page_notes_reminder_time_stored', $reminder_time);
+            }
         }
     }
 
@@ -1560,10 +1646,16 @@ class PageNotes {
 
     /**
      * Cron job callback - send task reminders
-     * Runs daily at 9 AM
+     * Runs daily at configured time
      */
     public function cron_send_reminders() {
         global $wpdb;
+
+        // Check if reminders are enabled globally
+        $reminders_enabled = get_option('page_notes_reminders_enabled', '1');
+        if ($reminders_enabled !== '1') {
+            return;
+        }
 
         // Get all users with reminders enabled
         $users = get_users(array(
