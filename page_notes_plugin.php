@@ -42,6 +42,9 @@ class PageNotes {
         add_action('wp_enqueue_scripts', array($this, 'enqueue_assets'));
         add_action('admin_enqueue_scripts', array($this, 'enqueue_assets'));
 
+        // Admin settings page
+        add_action('admin_menu', array($this, 'add_settings_page'));
+
         // User profile hooks
         add_action('show_user_profile', array($this, 'add_user_profile_fields'));
         add_action('edit_user_profile', array($this, 'add_user_profile_fields'));
@@ -574,6 +577,59 @@ class PageNotes {
         // Save the checkbox value
         $enabled = isset($_POST['page_notes_enabled']) ? '1' : '0';
         update_user_meta($user_id, 'page_notes_enabled', $enabled);
+    }
+
+    /**
+     * Add settings page to WordPress admin menu
+     */
+    public function add_settings_page() {
+        // Only allow administrators to access settings
+        if (!current_user_can('manage_options')) {
+            return;
+        }
+
+        add_options_page(
+            'Page Notes Settings',           // Page title
+            'Page Notes',                    // Menu title
+            'manage_options',                // Capability required
+            'page-notes-settings',           // Menu slug
+            array($this, 'render_settings_page') // Callback function
+        );
+    }
+
+    /**
+     * Render the settings page content
+     */
+    public function render_settings_page() {
+        // Check user capabilities
+        if (!current_user_can('manage_options')) {
+            wp_die(__('You do not have sufficient permissions to access this page.'));
+        }
+        ?>
+        <div class="wrap">
+            <h1><?php echo esc_html(get_admin_page_title()); ?></h1>
+
+            <div class="card">
+                <h2>Welcome to Page Notes Settings</h2>
+                <p>Additional settings and controls will be added here.</p>
+                <p>Currently, users can enable or disable Page Notes from their profile page.</p>
+            </div>
+
+            <div class="card" style="margin-top: 20px;">
+                <h2>Plugin Information</h2>
+                <table class="form-table">
+                    <tr>
+                        <th scope="row">Version</th>
+                        <td><?php echo esc_html(PAGE_NOTES_VERSION); ?></td>
+                    </tr>
+                    <tr>
+                        <th scope="row">Plugin Directory</th>
+                        <td><code><?php echo esc_html(PAGE_NOTES_PLUGIN_DIR); ?></code></td>
+                    </tr>
+                </table>
+            </div>
+        </div>
+        <?php
     }
 }
 
