@@ -32,8 +32,6 @@ class PageNotes {
     }
     
     private function __construct() {
-        error_log('Page Notes: Plugin constructor called');
-
         // Activation/Deactivation/Uninstall hooks
         register_activation_hook(__FILE__, array($this, 'activate'));
         register_deactivation_hook(__FILE__, array($this, 'deactivate'));
@@ -49,8 +47,6 @@ class PageNotes {
         add_action('edit_user_profile', array($this, 'add_user_profile_fields'));
         add_action('personal_options_update', array($this, 'save_user_profile_fields'));
         add_action('edit_user_profile_update', array($this, 'save_user_profile_fields'));
-
-        error_log('Page Notes: Profile hooks registered');
 
         // AJAX handlers
         add_action('wp_ajax_pn_get_notes', array($this, 'ajax_get_notes'));
@@ -544,8 +540,6 @@ class PageNotes {
      * Add Page Notes section to user profile page
      */
     public function add_user_profile_fields($user) {
-        error_log('Page Notes: add_user_profile_fields called for user ' . $user->ID);
-
         // Get current setting (default to enabled)
         $enabled = get_user_meta($user->ID, 'page_notes_enabled', true);
         if ($enabled === '') {
