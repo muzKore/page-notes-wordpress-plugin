@@ -3,7 +3,7 @@
  * Plugin Name: Page Notes
  * Plugin URI: https://example.com
  * Description: Add collaborative notes to any element on your WordPress pages
- * Version: 1.0.0
+ * Version: 1.1.0
  * Author: Murray Chapman
  * Author URI: https://muzkore.com
  * License: GPL v2 or later
@@ -16,7 +16,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Define plugin constants
-define('PAGE_NOTES_VERSION', '1.0.6');
+define('PAGE_NOTES_VERSION', '1.1.0');
 define('PAGE_NOTES_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('PAGE_NOTES_PLUGIN_URL', plugin_dir_url(__FILE__));
 
@@ -61,20 +61,21 @@ class PageNotes {
     }
     
     /**
-     * Plugin activation - create database table
+     * Plugin activation - create/update database table
      */
     public function activate() {
         global $wpdb;
         $table_name = $wpdb->prefix . 'page_notes';
         $charset_collate = $wpdb->get_charset_collate();
-        
-        $sql = "CREATE TABLE IF NOT EXISTS $table_name (
+
+        $sql = "CREATE TABLE $table_name (
             id bigint(20) NOT NULL AUTO_INCREMENT,
             page_id bigint(20) NOT NULL,
             page_url varchar(500) NOT NULL,
             element_selector text NOT NULL,
             content text NOT NULL,
             user_id bigint(20) NOT NULL,
+            assigned_to bigint(20) DEFAULT NULL,
             parent_id bigint(20) DEFAULT 0,
             status varchar(20) DEFAULT 'open',
             created_at datetime DEFAULT CURRENT_TIMESTAMP,
@@ -82,11 +83,15 @@ class PageNotes {
             PRIMARY KEY (id),
             KEY page_id (page_id),
             KEY user_id (user_id),
+            KEY assigned_to (assigned_to),
             KEY parent_id (parent_id)
         ) $charset_collate;";
-        
+
         require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
         dbDelta($sql);
+
+        // Update plugin version in database
+        update_option('page_notes_db_version', PAGE_NOTES_VERSION);
     }
     
     /**
