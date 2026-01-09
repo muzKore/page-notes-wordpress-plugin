@@ -208,8 +208,9 @@ class PageNotes {
         $notes = $wpdb->get_results($wpdb->prepare(
             "SELECT n.*,
                 u.display_name as user_name,
-                a.display_name as assigned_to_name,
-                a.user_login as assigned_to_username
+                a.display_name as assigned_to_display_name,
+                a.user_login as assigned_to_username,
+                a.ID as assigned_to_id
             FROM $table_name n
             LEFT JOIN {$wpdb->users} u ON n.user_id = u.ID
             LEFT JOIN {$wpdb->users} a ON n.assigned_to = a.ID
@@ -219,12 +220,19 @@ class PageNotes {
             $page_url
         ));
 
-        // Sanitize output to prevent XSS
+        // Build better display names using first/last names with fallback
         foreach ($notes as $note) {
             $note->user_name = esc_html($note->user_name);
             $note->element_selector = esc_attr($note->element_selector);
-            $note->assigned_to_name = esc_html($note->assigned_to_name);
             $note->assigned_to_username = esc_html($note->assigned_to_username);
+
+            // Build assigned_to_name from first/last name or display name or username
+            if ($note->assigned_to_id) {
+                $note->assigned_to_name = $this->get_user_display_name($note->assigned_to_id);
+            } else {
+                $note->assigned_to_name = '';
+            }
+
             // content is already sanitized with wp_kses_post on input
         }
 
@@ -299,8 +307,9 @@ class PageNotes {
             $note = $wpdb->get_row($wpdb->prepare(
                 "SELECT n.*,
                     u.display_name as user_name,
-                    a.display_name as assigned_to_name,
-                    a.user_login as assigned_to_username
+                    a.display_name as assigned_to_display_name,
+                    a.user_login as assigned_to_username,
+                    a.ID as assigned_to_id
                 FROM $table_name n
                 LEFT JOIN {$wpdb->users} u ON n.user_id = u.ID
                 LEFT JOIN {$wpdb->users} a ON n.assigned_to = a.ID
@@ -308,12 +317,18 @@ class PageNotes {
                 $note_id
             ));
 
-            // Sanitize output to prevent XSS
+            // Sanitize output to prevent XSS and build display name
             if ($note) {
                 $note->user_name = esc_html($note->user_name);
                 $note->element_selector = esc_attr($note->element_selector);
-                $note->assigned_to_name = esc_html($note->assigned_to_name);
                 $note->assigned_to_username = esc_html($note->assigned_to_username);
+
+                // Build assigned_to_name from first/last name or display name or username
+                if ($note->assigned_to_id) {
+                    $note->assigned_to_name = $this->get_user_display_name($note->assigned_to_id);
+                } else {
+                    $note->assigned_to_name = '';
+                }
             }
 
             wp_send_json_success($note);
@@ -748,6 +763,43 @@ class PageNotes {
             </div>
         </div>
         <?php
+    }
+
+    /**
+     * Get user display name with first/last name preference
+     * Priority: First Last > Display Name > Username
+     */
+    private function get_user_display_name($user_id) {
+        $first_name = get_user_meta($user_id, 'first_name', true);
+        $last_name = get_user_meta($user_id, 'last_name', true);
+
+        // If both first and last name exist, use them
+        if (!empty($first_name) && !empty($last_name)) {
+            return esc_html(trim($first_name . ' ' . $last_name));
+        }
+
+        // If only first name exists
+        if (!empty($first_name)) {
+            return esc_html($first_name);
+        }
+
+        // If only last name exists
+        if (!empty($last_name)) {
+            return esc_html($last_name);
+        }
+
+        // Fall back to display name
+        $user = get_user_by('id', $user_id);
+        if ($user && !empty($user->display_name)) {
+            return esc_html($user->display_name);
+        }
+
+        // Final fallback to username
+        if ($user && !empty($user->user_login)) {
+            return esc_html($user->user_login);
+        }
+
+        return '';
     }
 
     /**
