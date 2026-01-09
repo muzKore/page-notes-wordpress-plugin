@@ -870,12 +870,13 @@ class PageNotes {
                 strpos($first_name_lower, $search_lower) !== false ||
                 strpos($last_name_lower, $search_lower) !== false
             ) {
+                // Build display name using the same priority as assignment badges
+                $real_name = $this->get_user_display_name($user->ID);
+
                 $results[] = array(
                     'id' => $user->ID,
                     'username' => $user->user_login,
-                    'display_name' => $user->display_name,
-                    'first_name' => get_user_meta($user->ID, 'first_name', true),
-                    'last_name' => get_user_meta($user->ID, 'last_name', true)
+                    'display_name' => $real_name // Use real name instead of display_name
                 );
             }
 
