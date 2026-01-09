@@ -551,14 +551,9 @@
   background-color: #f5f5f5;
 }
 
-.mention-item strong {
-  color: #0073aa;
-  font-weight: 600;
-}
-
-.mention-item span {
-  color: #666;
-  font-size: 0.9em;
+.mention-item .mention-name {
+  color: #333;
+  font-size: 14px;
 }
 
 /* @Mention styling in note content */

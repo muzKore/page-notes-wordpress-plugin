@@ -732,13 +732,16 @@
                     ? `<div class="note-assigned-badge">Assigned to: ${note.assigned_to_name}</div>`
                     : '';
 
+                // Strip @mentions from content since we show assignment separately
+                const displayContent = this.stripMentions(note.content);
+
                 html += `
                     <div class="note-item ${completedClass}" data-note-id="${note.id}" data-selector="${note.element_selector}">
                         <div class="note-header">
                             <span class="note-author">${note.user_name}</span>
                             <span class="note-date">${date}</span>
                         </div>
-                        <div class="note-content">${note.content}</div>
+                        <div class="note-content">${displayContent}</div>
                         ${assignedBadge}
                         <div class="note-actions">
                             <button class="note-btn note-btn-edit">Edit</button>
@@ -1068,10 +1071,12 @@
             let html = '';
 
             users.forEach(function(user, index) {
+                // Display format: "Display Name (username)"
+                const displayText = user.display_name ? `${user.display_name} (@${user.username})` : `@${user.username}`;
+
                 html += `
                     <div class="mention-item" data-username="${user.username}" data-index="${index}">
-                        <strong>@${user.username}</strong>
-                        <span>${user.display_name}</span>
+                        <span class="mention-name">${displayText}</span>
                     </div>
                 `;
             });
@@ -1128,6 +1133,15 @@
                     item.classList.remove('selected');
                 }
             });
+        },
+
+        /**
+         * STRIP MENTIONS
+         * Remove @mentions from displayed text since we show assignment badge
+         */
+        stripMentions: function(content) {
+            // Remove @username mentions (username can have letters, numbers, underscore, hyphen)
+            return content.replace(/@[\w-]+/g, '').trim();
         }
     };
     

@@ -790,25 +790,47 @@ class PageNotes {
         }
 
         // Search for users with allowed roles
+        // We'll do a broader search and filter on the PHP side to include first/last names
         $args = array(
-            'search' => '*' . $search . '*',
-            'search_columns' => array('user_login', 'display_name'),
             'role__in' => $allowed_roles,
-            'number' => 10,
+            'number' => 50, // Get more results for filtering
             'orderby' => 'display_name',
             'order' => 'ASC'
         );
 
         $user_query = new WP_User_Query($args);
-        $users = $user_query->get_results();
+        $all_users = $user_query->get_results();
 
+        // Filter results based on search term matching username, display name, first name, or last name
+        $search_lower = strtolower($search);
         $results = array();
-        foreach ($users as $user) {
-            $results[] = array(
-                'id' => $user->ID,
-                'username' => $user->user_login,
-                'display_name' => $user->display_name
-            );
+
+        foreach ($all_users as $user) {
+            $username_lower = strtolower($user->user_login);
+            $display_name_lower = strtolower($user->display_name);
+            $first_name_lower = strtolower(get_user_meta($user->ID, 'first_name', true));
+            $last_name_lower = strtolower(get_user_meta($user->ID, 'last_name', true));
+
+            // Check if search matches any of these fields
+            if (
+                strpos($username_lower, $search_lower) !== false ||
+                strpos($display_name_lower, $search_lower) !== false ||
+                strpos($first_name_lower, $search_lower) !== false ||
+                strpos($last_name_lower, $search_lower) !== false
+            ) {
+                $results[] = array(
+                    'id' => $user->ID,
+                    'username' => $user->user_login,
+                    'display_name' => $user->display_name,
+                    'first_name' => get_user_meta($user->ID, 'first_name', true),
+                    'last_name' => get_user_meta($user->ID, 'last_name', true)
+                );
+            }
+
+            // Limit to 10 results
+            if (count($results) >= 10) {
+                break;
+            }
         }
 
         wp_send_json_success($results);
