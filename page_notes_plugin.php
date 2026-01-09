@@ -540,11 +540,6 @@ class PageNotes {
      * Add Page Notes section to user profile page
      */
     public function add_user_profile_fields($user) {
-        // Only show to users who can edit posts
-        if (!current_user_can('edit_posts')) {
-            return;
-        }
-
         // Get current setting (default to enabled)
         $enabled = get_user_meta($user->ID, 'page_notes_enabled', true);
         if ($enabled === '') {
