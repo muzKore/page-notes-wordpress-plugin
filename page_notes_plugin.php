@@ -540,32 +540,24 @@ class PageNotes {
      * Add Page Notes section to user profile page
      */
     public function add_user_profile_fields($user) {
+        error_log('Page Notes: add_user_profile_fields called for user ' . $user->ID);
+
         // Get current setting (default to enabled)
         $enabled = get_user_meta($user->ID, 'page_notes_enabled', true);
         if ($enabled === '') {
             $enabled = '1'; // Default to enabled
         }
         ?>
-        <h2><?php esc_html_e('Page Notes', 'page-notes'); ?></h2>
+        <h3>Page Notes</h3>
         <table class="form-table" role="presentation">
             <tr>
-                <th scope="row"><?php esc_html_e('Enable Page Notes', 'page-notes'); ?></th>
+                <th scope="row">Enable Page Notes</th>
                 <td>
-                    <fieldset>
-                        <label for="page_notes_enabled">
-                            <input
-                                type="checkbox"
-                                name="page_notes_enabled"
-                                id="page_notes_enabled"
-                                value="1"
-                                <?php checked($enabled, '1'); ?>
-                            />
-                            <?php esc_html_e('Show Page Notes button in admin bar and load Page Notes functionality', 'page-notes'); ?>
-                        </label>
-                        <p class="description">
-                            <?php esc_html_e('Uncheck this to disable Page Notes for your account. You can re-enable it anytime.', 'page-notes'); ?>
-                        </p>
-                    </fieldset>
+                    <label for="page_notes_enabled">
+                        <input type="checkbox" name="page_notes_enabled" id="page_notes_enabled" value="1" <?php checked($enabled, '1'); ?> />
+                        Show Page Notes button in admin bar and load Page Notes functionality
+                    </label>
+                    <p class="description">Uncheck this to disable Page Notes for your account. You can re-enable it anytime.</p>
                 </td>
             </tr>
         </table>
