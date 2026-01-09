@@ -44,6 +44,7 @@ class PageNotes {
 
         // Admin settings page
         add_action('admin_menu', array($this, 'add_settings_page'));
+        add_action('admin_init', array($this, 'register_settings'));
 
         // User profile hooks
         add_action('show_user_profile', array($this, 'add_user_profile_fields'));
@@ -519,8 +520,37 @@ class PageNotes {
     }
 
     /**
+     * Check if user's role is allowed to use Page Notes
+     */
+    private function user_role_is_allowed($user = null) {
+        if ($user === null) {
+            $user = wp_get_current_user();
+        }
+
+        if (!$user || !$user->exists()) {
+            return false;
+        }
+
+        // Get allowed roles from settings (default to administrator only)
+        $allowed_roles = get_option('page_notes_allowed_roles', array('administrator'));
+        if (!is_array($allowed_roles)) {
+            $allowed_roles = array('administrator');
+        }
+
+        // Check if user has any of the allowed roles
+        $user_roles = $user->roles;
+        foreach ($user_roles as $role) {
+            if (in_array($role, $allowed_roles)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Check if Page Notes is enabled for the current user
-     * Default is enabled (true) if not set
+     * Checks both role permission and user preference
      */
     private function is_page_notes_enabled_for_user() {
         $user_id = get_current_user_id();
@@ -528,7 +558,12 @@ class PageNotes {
             return false;
         }
 
-        // Get user meta - default to '1' (enabled) if not set
+        // First check if user's role is allowed
+        if (!$this->user_role_is_allowed()) {
+            return false;
+        }
+
+        // Then check user's personal preference (default to enabled)
         $enabled = get_user_meta($user_id, 'page_notes_enabled', true);
 
         // If the meta doesn't exist yet, default to enabled
@@ -543,6 +578,11 @@ class PageNotes {
      * Add Page Notes section to user profile page
      */
     public function add_user_profile_fields($user) {
+        // Only show if user's role is allowed to use Page Notes
+        if (!$this->user_role_is_allowed($user)) {
+            return;
+        }
+
         // Get current setting (default to enabled)
         $enabled = get_user_meta($user->ID, 'page_notes_enabled', true);
         if ($enabled === '') {
@@ -598,6 +638,13 @@ class PageNotes {
     }
 
     /**
+     * Register plugin settings
+     */
+    public function register_settings() {
+        register_setting('page_notes_settings', 'page_notes_allowed_roles');
+    }
+
+    /**
      * Render the settings page content
      */
     public function render_settings_page() {
@@ -605,15 +652,64 @@ class PageNotes {
         if (!current_user_can('manage_options')) {
             wp_die(__('You do not have sufficient permissions to access this page.'));
         }
+
+        // Get all WordPress roles
+        $wp_roles = wp_roles();
+        $all_roles = $wp_roles->get_names();
+
+        // Get current allowed roles setting (default to just administrator)
+        $allowed_roles = get_option('page_notes_allowed_roles', array('administrator'));
+        if (!is_array($allowed_roles)) {
+            $allowed_roles = array('administrator');
+        }
+
         ?>
         <div class="wrap">
             <h1><?php echo esc_html(get_admin_page_title()); ?></h1>
 
-            <div class="card">
-                <h2>Welcome to Page Notes Settings</h2>
-                <p>Additional settings and controls will be added here.</p>
-                <p>Currently, users can enable or disable Page Notes from their profile page.</p>
-            </div>
+            <form method="post" action="options.php">
+                <?php settings_fields('page_notes_settings'); ?>
+
+                <div class="card">
+                    <h2>User Role Access</h2>
+                    <p>Select which user roles should have access to Page Notes. Users with allowed roles can then enable/disable Page Notes in their profile.</p>
+
+                    <table class="form-table">
+                        <tr>
+                            <th scope="row">Allowed User Roles</th>
+                            <td>
+                                <fieldset>
+                                    <?php foreach ($all_roles as $role_key => $role_name) : ?>
+                                        <?php
+                                        $is_admin = ($role_key === 'administrator');
+                                        $is_checked = in_array($role_key, $allowed_roles) || $is_admin;
+                                        ?>
+                                        <label style="display: block; margin-bottom: 8px;">
+                                            <input
+                                                type="checkbox"
+                                                name="page_notes_allowed_roles[]"
+                                                value="<?php echo esc_attr($role_key); ?>"
+                                                <?php checked($is_checked, true); ?>
+                                                <?php echo $is_admin ? 'disabled' : ''; ?>
+                                            />
+                                            <?php echo esc_html($role_name); ?>
+                                            <?php if ($is_admin) : ?>
+                                                <em>(always enabled)</em>
+                                                <input type="hidden" name="page_notes_allowed_roles[]" value="administrator" />
+                                            <?php endif; ?>
+                                        </label>
+                                    <?php endforeach; ?>
+                                    <p class="description">
+                                        Administrators always have access to Page Notes and cannot be disabled.
+                                    </p>
+                                </fieldset>
+                            </td>
+                        </tr>
+                    </table>
+                </div>
+
+                <?php submit_button('Save Settings'); ?>
+            </form>
 
             <div class="card" style="margin-top: 20px;">
                 <h2>Plugin Information</h2>
