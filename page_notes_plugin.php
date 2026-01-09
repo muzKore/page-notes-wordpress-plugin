@@ -65,6 +65,7 @@ class PageNotes {
         // Cron job for auto-sending notifications
         add_filter('cron_schedules', array($this, 'add_cron_schedules'));
         add_action('page_notes_auto_send_notifications', array($this, 'cron_send_notifications'));
+        add_action('page_notes_send_reminders', array($this, 'cron_send_reminders'));
         add_action('admin_init', array($this, 'schedule_cron_if_needed'));
     }
     
@@ -102,16 +103,26 @@ class PageNotes {
 
         // Update plugin version in database
         update_option('page_notes_db_version', PAGE_NOTES_VERSION);
+
+        // Schedule daily reminder cron if not already scheduled
+        if (!wp_next_scheduled('page_notes_send_reminders')) {
+            wp_schedule_event(strtotime('tomorrow 9:00 AM'), 'daily', 'page_notes_send_reminders');
+        }
     }
     
     /**
      * Plugin deactivation
      */
     public function deactivate() {
-        // Clear scheduled cron job
+        // Clear scheduled cron jobs
         $timestamp = wp_next_scheduled('page_notes_auto_send_notifications');
         if ($timestamp) {
             wp_unschedule_event($timestamp, 'page_notes_auto_send_notifications');
+        }
+
+        $reminder_timestamp = wp_next_scheduled('page_notes_send_reminders');
+        if ($reminder_timestamp) {
+            wp_unschedule_event($reminder_timestamp, 'page_notes_send_reminders');
         }
     }
 
@@ -700,10 +711,20 @@ class PageNotes {
             return;
         }
 
-        // Get current setting (default to enabled)
+        // Get current settings (default to enabled)
         $enabled = get_user_meta($user->ID, 'page_notes_enabled', true);
         if ($enabled === '') {
             $enabled = '1'; // Default to enabled
+        }
+
+        $reminders_enabled = get_user_meta($user->ID, 'page_notes_reminders_enabled', true);
+        if ($reminders_enabled === '') {
+            $reminders_enabled = '0'; // Default to disabled
+        }
+
+        $reminder_interval = get_user_meta($user->ID, 'page_notes_reminder_interval', true);
+        if (empty($reminder_interval)) {
+            $reminder_interval = '1'; // Default to daily
         }
         ?>
         <h3>Page Notes</h3>
@@ -716,6 +737,32 @@ class PageNotes {
                         Show Page Notes button in admin bar and load Page Notes functionality
                     </label>
                     <p class="description">Uncheck this to disable Page Notes for your account. You can re-enable it anytime.</p>
+                </td>
+            </tr>
+            <tr>
+                <th scope="row">Task Reminders</th>
+                <td>
+                    <label for="page_notes_reminders_enabled">
+                        <input type="checkbox" name="page_notes_reminders_enabled" id="page_notes_reminders_enabled" value="1" <?php checked($reminders_enabled, '1'); ?> />
+                        Send me email reminders about incomplete tasks assigned to me
+                    </label>
+                    <p class="description">Get periodic reminders about tasks that are still waiting for you.</p>
+                </td>
+            </tr>
+            <tr>
+                <th scope="row">Reminder Frequency</th>
+                <td>
+                    <label for="page_notes_reminder_interval">
+                        Send reminders every:
+                        <select name="page_notes_reminder_interval" id="page_notes_reminder_interval">
+                            <option value="1" <?php selected($reminder_interval, '1'); ?>>1 day (daily)</option>
+                            <option value="2" <?php selected($reminder_interval, '2'); ?>>2 days</option>
+                            <option value="3" <?php selected($reminder_interval, '3'); ?>>3 days</option>
+                            <option value="5" <?php selected($reminder_interval, '5'); ?>>5 days</option>
+                            <option value="7" <?php selected($reminder_interval, '7'); ?>>7 days (weekly)</option>
+                        </select>
+                    </label>
+                    <p class="description">Only applies if task reminders are enabled above.</p>
                 </td>
             </tr>
         </table>
@@ -731,9 +778,20 @@ class PageNotes {
             return false;
         }
 
-        // Save the checkbox value
+        // Save the checkbox values
         $enabled = isset($_POST['page_notes_enabled']) ? '1' : '0';
         update_user_meta($user_id, 'page_notes_enabled', $enabled);
+
+        $reminders_enabled = isset($_POST['page_notes_reminders_enabled']) ? '1' : '0';
+        update_user_meta($user_id, 'page_notes_reminders_enabled', $reminders_enabled);
+
+        // Save reminder interval
+        if (isset($_POST['page_notes_reminder_interval'])) {
+            $interval = intval($_POST['page_notes_reminder_interval']);
+            if (in_array($interval, array(1, 2, 3, 5, 7))) {
+                update_user_meta($user_id, 'page_notes_reminder_interval', $interval);
+            }
+        }
     }
 
     /**
@@ -1498,6 +1556,315 @@ class PageNotes {
 
         // Send pending notifications
         $this->send_pending_notifications();
+    }
+
+    /**
+     * Cron job callback - send task reminders
+     * Runs daily at 9 AM
+     */
+    public function cron_send_reminders() {
+        global $wpdb;
+
+        // Get all users with reminders enabled
+        $users = get_users(array(
+            'meta_key' => 'page_notes_reminders_enabled',
+            'meta_value' => '1'
+        ));
+
+        if (empty($users)) {
+            return;
+        }
+
+        $table_name = $wpdb->prefix . 'page_notes';
+        $sent_count = 0;
+
+        foreach ($users as $user) {
+            // Get user's reminder interval (in days)
+            $interval = intval(get_user_meta($user->ID, 'page_notes_reminder_interval', true));
+            if (empty($interval)) {
+                $interval = 1; // Default to daily
+            }
+
+            // Get last reminder sent date
+            $last_sent = get_user_meta($user->ID, 'page_notes_last_reminder_sent', true);
+
+            // Check if enough days have passed
+            if (!empty($last_sent)) {
+                $days_since = floor((time() - intval($last_sent)) / DAY_IN_SECONDS);
+                if ($days_since < $interval) {
+                    continue; // Not time yet
+                }
+            }
+
+            // Get all open notes assigned to this user
+            $open_notes = $wpdb->get_results($wpdb->prepare(
+                "SELECT n.*,
+                    creator.display_name as creator_display_name,
+                    creator.ID as creator_id
+                FROM $table_name n
+                LEFT JOIN {$wpdb->users} creator ON n.user_id = creator.ID
+                WHERE n.assigned_to = %d
+                AND n.status = 'open'
+                ORDER BY n.page_url, n.created_at ASC",
+                $user->ID
+            ));
+
+            // Only send if there are open tasks
+            if (!empty($open_notes)) {
+                $email_sent = $this->send_reminder_email($user->user_email, $this->get_user_display_name($user->ID), $open_notes);
+
+                if ($email_sent) {
+                    // Update last sent timestamp
+                    update_user_meta($user->ID, 'page_notes_last_reminder_sent', time());
+                    $sent_count++;
+                }
+            }
+        }
+
+        return $sent_count;
+    }
+
+    /**
+     * Send task reminder email to a user
+     */
+    private function send_reminder_email($to_email, $to_name, $notes) {
+        // Group notes by page
+        $notes_by_page = array();
+        foreach ($notes as $note) {
+            $page_key = $note->page_url;
+            if (!isset($notes_by_page[$page_key])) {
+                $notes_by_page[$page_key] = array(
+                    'page_id' => $note->page_id,
+                    'page_url' => $note->page_url,
+                    'page_title' => '',
+                    'notes' => array()
+                );
+            }
+            $notes_by_page[$page_key]['notes'][] = $note;
+        }
+
+        // Get page titles
+        foreach ($notes_by_page as $page_key => &$page_data) {
+            $title = '';
+
+            // Try to get post by URL first
+            if (!empty($page_data['page_url'])) {
+                $post_id = url_to_postid($page_data['page_url']);
+                if ($post_id > 0) {
+                    $title = get_the_title($post_id);
+                }
+            }
+
+            // Try using stored page_id
+            if (empty($title) && $page_data['page_id'] > 0) {
+                $post = get_post($page_data['page_id']);
+                if ($post && $post->post_status !== 'trash') {
+                    $title = get_the_title($page_data['page_id']);
+                }
+            }
+
+            // Extract from URL path
+            if (empty($title) && !empty($page_data['page_url'])) {
+                $parsed = parse_url($page_data['page_url']);
+                if (isset($parsed['path'])) {
+                    $path = trim($parsed['path'], '/');
+                    $title = $path ? ucwords(str_replace(['-', '_', '/'], ' ', $path)) : 'Home';
+                }
+            }
+
+            $page_data['page_title'] = $title ?: 'Unknown Page';
+        }
+        unset($page_data);
+
+        // Count total notes
+        $total_notes = count($notes);
+        $page_count = count($notes_by_page);
+
+        // Get site name for subject line
+        $site_name = get_bloginfo('name');
+
+        // Build email subject
+        $subject = sprintf('Reminder: You have %d incomplete task%s on %s',
+            $total_notes,
+            $total_notes === 1 ? '' : 's',
+            $site_name
+        );
+
+        // Build email body
+        $message = $this->build_reminder_email_template($to_name, $notes_by_page, $total_notes, $page_count);
+
+        // Email headers
+        $headers = array(
+            'Content-Type: text/html; charset=UTF-8',
+            'From: ' . get_bloginfo('name') . ' <' . get_option('admin_email') . '>'
+        );
+
+        // Send email
+        return wp_mail($to_email, $subject, $message, $headers);
+    }
+
+    /**
+     * Build HTML email template for reminders
+     */
+    private function build_reminder_email_template($to_name, $notes_by_page, $total_notes, $page_count) {
+        $site_name = get_bloginfo('name');
+        $site_url = get_site_url();
+
+        ob_start();
+        ?>
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <style>
+                body {
+                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+                    line-height: 1.6;
+                    color: #333;
+                    max-width: 600px;
+                    margin: 0 auto;
+                    padding: 20px;
+                }
+                .header {
+                    background: #ff9800;
+                    color: white;
+                    padding: 20px;
+                    border-radius: 5px 5px 0 0;
+                }
+                .header h1 {
+                    margin: 0;
+                    font-size: 24px;
+                }
+                .content {
+                    background: #fff8e1;
+                    padding: 20px;
+                    border: 1px solid #ffcc80;
+                    border-top: none;
+                }
+                .greeting {
+                    font-size: 16px;
+                    margin-bottom: 20px;
+                }
+                .divider {
+                    border-top: 2px solid #ff9800;
+                    margin: 20px 0;
+                }
+                .page-section {
+                    margin-bottom: 25px;
+                }
+                .page-title {
+                    font-size: 18px;
+                    font-weight: 600;
+                    color: #e65100;
+                    margin-bottom: 10px;
+                }
+                .page-link {
+                    display: inline-block;
+                    color: #e65100;
+                    text-decoration: none;
+                    font-size: 14px;
+                    margin-bottom: 10px;
+                }
+                .page-link:hover {
+                    text-decoration: underline;
+                }
+                .note-item {
+                    background: white;
+                    padding: 12px;
+                    margin-bottom: 10px;
+                    border-left: 3px solid #ff9800;
+                    border-radius: 3px;
+                }
+                .note-content {
+                    margin: 0 0 8px 0;
+                    font-size: 14px;
+                }
+                .note-meta {
+                    font-size: 12px;
+                    color: #666;
+                }
+                .note-author {
+                    font-style: italic;
+                }
+                .note-age {
+                    color: #999;
+                    margin-left: 8px;
+                }
+                .footer {
+                    background: #fff8e1;
+                    padding: 15px 20px;
+                    border: 1px solid #ffcc80;
+                    border-top: none;
+                    border-radius: 0 0 5px 5px;
+                    text-align: center;
+                    font-size: 12px;
+                    color: #666;
+                }
+                .footer a {
+                    color: #e65100;
+                    text-decoration: none;
+                }
+            </style>
+        </head>
+        <body>
+            <div class="header">
+                <h1>📋 Task Reminder</h1>
+            </div>
+
+            <div class="content">
+                <div class="greeting">
+                    Hi <?php echo esc_html($to_name); ?>,
+                </div>
+
+                <p>This is your reminder that you have <?php echo esc_html($total_notes); ?> incomplete task<?php echo $total_notes === 1 ? '' : 's'; ?> waiting for you across <?php echo esc_html($page_count); ?> page<?php echo $page_count === 1 ? '' : 's'; ?>:</p>
+
+                <div class="divider"></div>
+
+                <?php foreach ($notes_by_page as $page_data) : ?>
+                    <div class="page-section">
+                        <div class="page-title"><?php echo esc_html($page_data['page_title']); ?></div>
+                        <a href="<?php echo esc_url($page_data['page_url']); ?>" class="page-link">View Page &rarr;</a>
+
+                        <?php foreach ($page_data['notes'] as $note) : ?>
+                            <?php
+                            $creator_name = $this->get_user_display_name($note->creator_id);
+                            // Strip @mentions from displayed content
+                            $display_content = preg_replace('/@[\w-]+/', '', $note->content);
+                            $display_content = trim($display_content);
+
+                            // Calculate how long ago the note was created
+                            $created_timestamp = strtotime($note->created_at);
+                            $days_ago = floor((time() - $created_timestamp) / DAY_IN_SECONDS);
+
+                            if ($days_ago == 0) {
+                                $age_text = 'today';
+                            } elseif ($days_ago == 1) {
+                                $age_text = '1 day ago';
+                            } else {
+                                $age_text = $days_ago . ' days ago';
+                            }
+                            ?>
+                            <div class="note-item">
+                                <p class="note-content"><?php echo nl2br(esc_html($display_content)); ?></p>
+                                <div class="note-meta">
+                                    <span class="note-author">Assigned by <?php echo esc_html($creator_name); ?></span>
+                                    <span class="note-age">(<?php echo esc_html($age_text); ?>)</span>
+                                </div>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+
+            <div class="footer">
+                <p>This is an automated reminder from <a href="<?php echo esc_url($site_url); ?>"><?php echo esc_html($site_name); ?></a></p>
+                <p>You can change your reminder preferences in your <a href="<?php echo esc_url(admin_url('profile.php')); ?>">profile settings</a>.</p>
+            </div>
+        </body>
+        </html>
+        <?php
+        return ob_get_clean();
     }
 }
 
