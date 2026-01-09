@@ -1,0 +1,509 @@
+/* Admin Bar Button Styling */
+#wp-admin-bar-page-notes-toggle > a {
+  transition: background-color 0.2s ease;
+  display: flex !important;
+  align-items: center !important;
+}
+
+#wp-admin-bar-page-notes-toggle .ab-icon {
+  padding: 0 !important;
+  margin-right: 6px !important;
+  height: auto !important;
+  width: auto !important;
+}
+
+#wp-admin-bar-page-notes-toggle .ab-icon:before {
+  display: inline-block !important;
+}
+
+/* page-notes-toggle */
+#wp-admin-bar-page-notes-toggle:not(.active) > a:hover,
+#wp-admin-bar-page-notes-toggle:not(.active) > a:focus {
+  background-color: #c9a200 !important; /* Dark yellow on hover */
+  color: #fff !important;
+}
+
+
+
+#wp-admin-bar-page-notes-toggle.active > a,
+#wp-admin-bar-page-notes-toggle.active > a:hover,
+#wp-admin-bar-page-notes-toggle.active > a:focus {
+  background-color: #fff9e6 !important;
+  color: #000 !important;
+}
+
+#wp-admin-bar-page-notes-toggle.active .ab-label {
+  color: #000 !important;
+}
+
+#wp-admin-bar-page-notes-toggle.active .ab-icon,
+#wp-admin-bar-page-notes-toggle.active .ab-icon:before {
+  color: #ffc107 !important;
+}
+
+/* Ensure colors stay consistent on hover */
+#wp-admin-bar-page-notes-toggle.active:hover > a,
+#wp-admin-bar-page-notes-toggle.active > a:hover .ab-label {
+  color: #000 !important;
+}
+
+#wp-admin-bar-page-notes-toggle.active > a:hover .ab-icon,
+#wp-admin-bar-page-notes-toggle.active > a:hover .ab-icon:before {
+  color: #ffc107 !important;
+}
+
+/* Main Panel Styles */
+.page-notes-panel {
+  position: fixed;
+  top: 42px; /* Below admin bar */
+  right: -410px; /* Hidden by default */
+  width: 400px;
+  height: 50vh; /* Half viewport height */
+  min-width: 300px;
+  min-height: 400px;
+  max-width: 800px;
+  max-height: 90vh;
+  background: #ffffff;
+  box-shadow: -2px 0 10px rgba(0, 0, 0, 0.25);
+  border-radius: 5px;
+  z-index: 99999;
+  transition: right 0.3s ease;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  resize: both;
+}
+
+.page-notes-panel.active {
+  right: 10px;
+}
+
+.page-notes-panel.dragging {
+  transition: none;
+  cursor: move;
+}
+
+.page-notes-panel.positioned {
+  right: auto;
+  transition: none;
+}
+
+/* Resize handle - visual indicator in bottom-right corner */
+.page-notes-panel::after {
+  content: "⋰";
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 20px;
+  height: 20px;
+  font-size: 16px;
+  line-height: 20px;
+  text-align: center;
+  color: #999;
+  pointer-events: none;
+  opacity: 0.5;
+}
+
+/* Panel Header */
+.page-notes-header {
+  padding: 20px;
+  background: #f8f9fa;
+  border-bottom: 1px solid #e0e0e0;
+  cursor: move;
+  user-select: none;
+}
+
+.page-notes-header:active {
+  cursor: grabbing;
+}
+
+.page-notes-header h3 {
+  margin: 0 0 10px 0;
+  font-size: 18px;
+  color: #333;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.page-notes-drag-icon {
+  display: inline-block;
+  width: 20px;
+  height: 20px;
+  opacity: 0.4;
+  flex-shrink: 0;
+}
+
+.page-notes-close {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  background: none;
+  border: none;
+  font-size: 24px;
+  color: #666;
+  cursor: pointer;
+  padding: 0;
+  width: 30px;
+  height: 30px;
+  line-height: 30px;
+  text-align: center;
+}
+
+.page-notes-close:hover {
+  color: #333;
+}
+
+/* Panel Content */
+.page-notes-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px 15px 20px 20px;
+}
+
+/* Pages List Section */
+.pages-with-notes {
+  margin-bottom: 30px;
+}
+
+.pages-with-notes h4 {
+  margin: 0 0 15px 0;
+  font-size: 14px;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.page-item {
+  padding: 12px;
+  background: #f8f9fa;
+  border-radius: 6px;
+  margin-bottom: 8px;
+  cursor: pointer;
+  transition: background 0.2s;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.page-item:hover {
+  background: #e9ecef;
+}
+
+.page-item.all-completed {
+  background: #e9f5e9;
+  border-left: 3px solid #4caf50;
+}
+
+.page-item.all-completed:hover {
+  background: #d4edda;
+}
+
+.page-item-title {
+  font-weight: 500;
+  color: #333;
+  font-size: 14px;
+}
+
+.page-item-count {
+  background: #dc3545;
+  color: white;
+  padding: 2px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 700;
+  min-width: 24px;
+  text-align: center;
+}
+
+/* Current Page Notes Section */
+.current-page-notes h4 {
+  margin: 0 0 15px 0;
+  font-size: 14px;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.note-item {
+  background: #fff9e6;
+  border-left: 3px solid #ffc107;
+  padding: 15px;
+  margin-bottom: 12px;
+  border-radius: 4px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.note-item:hover {
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+  transform: translateY(-2px);
+}
+
+.note-item.completed {
+  background: #e8f5e9;
+  border-left-color: #4caf50;
+  opacity: 1;
+}
+
+.note-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.note-author {
+  font-size: 12px;
+  color: #666;
+  font-weight: 500;
+}
+
+.note-date {
+  font-size: 11px;
+  color: #999;
+}
+
+.note-content {
+  font-size: 14px;
+  color: #333;
+  line-height: 1.6;
+  margin-bottom: 10px;
+}
+
+.note-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.note-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.note-btn-edit {
+  background: #e3f2fd;
+  color: #1976d2;
+}
+
+.note-btn-edit:hover {
+  background: #bbdefb;
+}
+
+.note-btn-complete {
+  background: #e8f5e9;
+  color: #388e3c;
+}
+
+.note-btn-complete:hover {
+  background: #c8e6c9;
+}
+
+.note-btn-delete {
+  background: #ffebee;
+  color: #c62828;
+}
+
+.note-btn-delete:hover {
+  background: #ffcdd2;
+}
+
+/* Element Highlighting */
+.page-notes-highlight {
+  outline: 2px solid #ffc107 !important;
+  outline-offset: 1px;
+  cursor: pointer !important;
+  position: relative;
+}
+
+/* Note Form Modal */
+.note-form-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 999999;
+  display: none;
+  align-items: center;
+  justify-content: center;
+}
+
+.note-form-overlay.active {
+  display: flex;
+}
+
+.note-form {
+  background: white;
+  padding: 30px;
+  border-radius: 8px;
+  width: 90%;
+  max-width: 500px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+}
+
+.note-form h3 {
+  margin: 0 0 20px 0;
+  font-size: 20px;
+  color: #333;
+}
+
+.note-form textarea {
+  width: calc(100% - 30px);
+  min-height: 120px;
+  padding: 12px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 14px;
+  font-family: inherit;
+  resize: vertical;
+  margin-bottom: 15px;
+}
+
+.note-form textarea:focus {
+  outline: none;
+  border-color: #007bff;
+}
+
+.note-form-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.note-form-btn {
+  padding: 10px 20px;
+  border: none;
+  border-radius: 4px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.note-form-btn-save {
+  background: #007bff;
+  color: white;
+}
+
+.note-form-btn-save:hover {
+  background: #0056b3;
+}
+
+.note-form-btn-cancel {
+  background: #e0e0e0;
+  color: #333;
+}
+
+.note-form-btn-cancel:hover {
+  background: #bdbdbd;
+}
+
+/* Empty State */
+.empty-state {
+  text-align: center;
+  padding: 40px 20px;
+  color: #999;
+}
+
+.empty-state-icon {
+  font-size: 48px;
+  margin-bottom: 15px;
+}
+
+.empty-state-text {
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+/* Mode Indicator */
+.page-notes-mode-indicator {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #333;
+  color: white;
+  padding: 12px 24px;
+  border-radius: 24px;
+  font-size: 14px;
+  z-index: 99998;
+  display: none;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.page-notes-mode-indicator.active {
+  display: block;
+}
+
+/* Scrollbar Styles - Only visible when scrolling */
+.page-notes-content {
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* For Webkit browsers (Chrome, Safari, Edge) */
+.page-notes-content::-webkit-scrollbar {
+  width: 8px;
+}
+
+.page-notes-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.page-notes-content::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 4px;
+  transition: background 0.3s ease;
+}
+
+/* Show scrollbar when hovering over the content area */
+.page-notes-content:hover::-webkit-scrollbar-thumb {
+  background: #888;
+}
+
+.page-notes-content::-webkit-scrollbar-thumb:hover {
+  background: #555;
+}
+
+/* For Firefox */
+.page-notes-content {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+  transition: scrollbar-color 0.3s ease;
+}
+
+.page-notes-content:hover {
+  scrollbar-color: #888 transparent;
+}
+
+/* New Note Pulse Animation */
+@keyframes notePulse {
+  0%,
+  100% {
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+    transform: scale(1);
+  }
+  25% {
+    box-shadow: 0 0 20px rgba(255, 193, 7, 0.6);
+    transform: scale(1.02);
+  }
+  50% {
+    box-shadow: 0 0 30px rgba(255, 193, 7, 0.8);
+    transform: scale(1.03);
+  }
+  75% {
+    box-shadow: 0 0 20px rgba(255, 193, 7, 0.6);
+    transform: scale(1.02);
+  }
+}
+
+.note-item.note-pulse {
+  animation: notePulse 1.5s ease-in-out 2;
+  border-left: 3px solid #ff9800;
+}
