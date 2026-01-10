@@ -20,6 +20,8 @@
         noteClickHandler: null,       // Store our click handler so we can remove it later
         isDragging: false,            // Is the panel being dragged?
         dragOffset: { x: 0, y: 0 },   // Offset from mouse to panel corner during drag
+        replyToNoteId: null,          // Track which note we're replying to
+        expandedReplies: new Set(),  // Track which reply sections are expanded (collapsed by default)
 
         /**
          * INITIALIZATION
@@ -53,6 +55,7 @@
             const textarea = document.querySelector('.note-form-textarea');
             if (textarea) {
                 this.setupMentionAutocomplete(textarea);
+                this.setupCharacterCounter(textarea);
             }
 
             // Load the list of pages with notes
@@ -94,8 +97,11 @@
                     <div class="note-form">
                         <h3>Add Note</h3>
                         <div class="note-form-textarea-wrapper">
-                            <textarea class="note-form-textarea" placeholder="Enter your note... Type @ to mention someone"></textarea>
+                            <textarea class="note-form-textarea" placeholder="Enter your note... Type @ to mention someone" maxlength="150"></textarea>
                             <div class="mention-autocomplete"></div>
+                        </div>
+                        <div class="note-form-char-counter">
+                            <span class="char-count">0</span> / <span class="char-limit">150</span> characters
                         </div>
                         <div class="note-form-actions">
                             <button class="note-form-btn note-form-btn-cancel">Cancel</button>
@@ -210,23 +216,47 @@
                 // Check if delete button was clicked
                 if (e.target.classList.contains('note-btn-delete')) {
                     e.stopPropagation();
+
+                    // Prevent deletion if button is disabled
+                    if (e.target.disabled) {
+                        return;
+                    }
+
                     const noteItem = e.target.closest('.note-item');
                     const noteId = noteItem.getAttribute('data-note-id');
                     self.deleteNote(noteId);
+                    return;
+                }
+
+                // Check if reply button was clicked
+                if (e.target.classList.contains('note-btn-reply')) {
+                    e.stopPropagation();
+                    const noteItem = e.target.closest('.note-item');
+                    const noteId = noteItem.getAttribute('data-note-id');
+                    self.replyToNote(noteId);
+                    return;
+                }
+
+                // Check if toggle replies button was clicked
+                const toggleButton = e.target.closest('.note-replies-toggle');
+                if (toggleButton) {
+                    e.stopPropagation();
+                    const noteId = toggleButton.getAttribute('data-note-id');
+                    self.toggleReplies(noteId);
                     return;
                 }
             });
             
             // Mouse hover events for highlighting elements
             document.addEventListener('mouseenter', function(e) {
-                if (e.target.classList.contains('note-item')) {
+                if (e.target && e.target.classList && e.target.classList.contains('note-item')) {
                     const selector = e.target.getAttribute('data-selector');
                     self.highlightElement(selector);
                 }
             }, true); // 'true' means capture phase (catches events earlier)
             
             document.addEventListener('mouseleave', function(e) {
-                if (e.target.classList.contains('note-item')) {
+                if (e.target && e.target.classList && e.target.classList.contains('note-item')) {
                     self.removeHighlight();
                 }
             }, true);
@@ -431,22 +461,196 @@
          * OPEN NOTE FORM
          * Shows the modal form for creating a note
          */
-        openNoteForm: function() {
+        openNoteForm: function(isReply = false, shouldQuote = false, parentNote = null) {
             const overlay = document.querySelector('.note-form-overlay');
             const textarea = document.querySelector('.note-form-textarea');
-            
+            const formTitle = document.querySelector('.note-form h3');
+
+            // Clear the textarea by default
+            textarea.value = '';
+
+            if (isReply && this.replyToNoteId) {
+                const replyingToNote = parentNote || this.currentNotes.find(n => n.id == this.replyToNoteId);
+                if (replyingToNote) {
+                    formTitle.textContent = `Reply to ${replyingToNote.user_name}`;
+
+                    // Add quoted text if needed (replying to older messages)
+                    if (shouldQuote) {
+                        const quotedText = this.generateQuotedText(replyingToNote);
+                        textarea.value = quotedText + '\n\n';
+                        // Move cursor to end after the quoted text
+                        setTimeout(() => {
+                            textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+                        }, 0);
+                    }
+                }
+            } else {
+                formTitle.textContent = 'Add Note';
+            }
+
+            // Update character counter
+            textarea.dispatchEvent(new Event('input'));
+
             overlay.classList.add('active');
-            textarea.value = ''; // Clear the textarea
             textarea.focus(); // Put cursor in the textarea
         },
-        
+
+        /**
+         * GENERATE QUOTED TEXT
+         * Creates a quoted version of a note's content for replying
+         */
+        generateQuotedText: function(note) {
+            // Strip @mentions from the content
+            const content = this.stripMentions(note.content);
+
+            // Truncate to approximately 2 lines (about 120 characters)
+            const truncated = this.truncateText(content, 120);
+
+            // Format as quote
+            const quoteLine = `> ${note.user_name} wrote:`;
+            const quoteContent = truncated.split('\n').map(line => `> ${line}`).join('\n');
+
+            return `${quoteLine}\n${quoteContent}`;
+        },
+
+        /**
+         * TRUNCATE TEXT
+         * Truncates text to a maximum length, adding ellipsis if needed
+         */
+        truncateText: function(text, maxLength) {
+            if (!text) return '';
+
+            // Clean up whitespace
+            text = text.trim();
+
+            if (text.length <= maxLength) {
+                return text;
+            }
+
+            // Find a good breaking point (space, period, comma)
+            let truncated = text.substring(0, maxLength);
+            const lastSpace = truncated.lastIndexOf(' ');
+            const lastPeriod = truncated.lastIndexOf('.');
+            const lastComma = truncated.lastIndexOf(',');
+
+            const breakPoint = Math.max(lastSpace, lastPeriod, lastComma);
+
+            if (breakPoint > maxLength * 0.7) {
+                // Use the break point if it's not too far back
+                truncated = text.substring(0, breakPoint);
+            }
+
+            return truncated.trim() + '...';
+        },
+
+        /**
+         * FORMAT QUOTED CONTENT
+         * Converts > quoted lines into HTML blockquotes with proper styling
+         */
+        formatQuotedContent: function(content) {
+            if (!content) return '';
+
+            // Decode HTML entities first (in case content has &gt; instead of >)
+            const decodedContent = this.decodeHtml(content);
+
+            const lines = decodedContent.split('\n');
+            let html = '';
+            let inQuote = false;
+            let quoteLines = [];
+
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i];
+
+                if (line.trim().startsWith('>')) {
+                    // This is a quoted line
+                    if (!inQuote) {
+                        inQuote = true;
+                        quoteLines = [];
+                    }
+                    // Remove the > and add to quote
+                    quoteLines.push(line.replace(/^>\s?/, ''));
+                } else {
+                    // Not a quoted line
+                    if (inQuote) {
+                        // End the quote block and format it
+                        html += this.formatQuoteBlock(quoteLines);
+                        inQuote = false;
+                        quoteLines = [];
+                    }
+                    // Add the regular line
+                    if (line.trim()) {
+                        html += this.escapeHtml(line) + '\n';
+                    } else {
+                        html += '\n';
+                    }
+                }
+            }
+
+            // Close any remaining quote
+            if (inQuote && quoteLines.length > 0) {
+                html += this.formatQuoteBlock(quoteLines);
+            }
+
+            return html.trim();
+        },
+
+        /**
+         * FORMAT QUOTE BLOCK
+         * Formats an array of quote lines into a styled blockquote
+         */
+        formatQuoteBlock: function(quoteLines) {
+            if (!quoteLines || quoteLines.length === 0) return '';
+
+            // Check if first line is the "wrote:" header
+            const firstLine = quoteLines[0];
+            let authorLine = '';
+            let contentLines = quoteLines;
+
+            if (firstLine.includes(' wrote:')) {
+                authorLine = '<div class="quote-author">' + this.escapeHtml(firstLine) + '</div>';
+                contentLines = quoteLines.slice(1);
+            }
+
+            const content = contentLines.map(line => this.escapeHtml(line)).join('\n');
+
+            return '<blockquote class="note-quote">' +
+                   '<span class="quote-mark">"</span>' +
+                   '<div class="quote-content">' +
+                   authorLine +
+                   (content ? '<div class="quote-text">' + content + '</div>' : '') +
+                   '</div>' +
+                   '</blockquote>';
+        },
+
+        /**
+         * ESCAPE HTML
+         * Escapes HTML special characters to prevent XSS
+         */
+        escapeHtml: function(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        },
+
+        /**
+         * DECODE HTML
+         * Decodes HTML entities back to regular characters
+         */
+        decodeHtml: function(text) {
+            const textarea = document.createElement('textarea');
+            textarea.innerHTML = text;
+            return textarea.value;
+        },
+
         /**
          * CLOSE NOTE FORM
          * Hides the modal form
          */
         closeNoteForm: function() {
             document.querySelector('.note-form-overlay').classList.remove('active');
+            document.querySelector('.note-form h3').textContent = 'Add Note';
             this.selectedElement = null;
+            this.replyToNoteId = null;
         },
         
         /**
@@ -455,22 +659,31 @@
          */
         saveNote: function() {
             const content = document.querySelector('.note-form-textarea').value.trim();
-            
+
             // Validate that user entered something
             if (!content) {
                 alert('Please enter a note');
                 return;
             }
-            
-            // Make sure an element was selected
-            if (!this.selectedElement) {
-                alert('No element selected');
-                return;
+
+            // If this is a reply, we don't need an element selector
+            let selector = '';
+            if (this.replyToNoteId) {
+                // For replies, use the parent note's selector
+                const parentNote = this.currentNotes.find(n => n.id == this.replyToNoteId);
+                if (parentNote) {
+                    selector = parentNote.element_selector;
+                }
+            } else {
+                // Make sure an element was selected for new notes
+                if (!this.selectedElement) {
+                    alert('No element selected');
+                    return;
+                }
+                // Generate a unique CSS selector for the element
+                selector = this.generateSelector(this.selectedElement);
             }
-            
-            // Generate a unique CSS selector for the element
-            const selector = this.generateSelector(this.selectedElement);
-            
+
             // Prepare the data to send to server
             // FormData is a special object for sending form data
             const formData = new FormData();
@@ -480,6 +693,11 @@
             formData.append('page_url', pageNotesData.currentPageUrl);
             formData.append('element_selector', selector);
             formData.append('content', content);
+
+            // Add parent_id if this is a reply
+            if (this.replyToNoteId) {
+                formData.append('parent_id', this.replyToNoteId);
+            }
             
             // AJAX CALL using Fetch API (modern JavaScript way)
             // fetch() sends a request to the server
@@ -711,7 +929,7 @@
         
         /**
          * RENDER NOTES LIST
-         * Displays all notes in the panel
+         * Displays all notes in the panel with threaded replies
          */
         renderNotesList: function(notes) {
             const notesList = document.querySelector('.notes-list');
@@ -721,7 +939,7 @@
                 return;
             }
 
-            // Filter to show only parent notes (not replies - we'll add threading later)
+            // Filter to show only parent notes
             const parentNotes = notes.filter(note => note.parent_id == 0);
 
             // Sort notes: open notes first, then completed notes
@@ -738,36 +956,178 @@
 
             let html = '';
             parentNotes.forEach(note => {
-                const completedClass = note.status === 'completed' ? 'completed' : '';
-                // Create a Date object and format it nicely
-                const date = new Date(note.created_at).toLocaleDateString();
-
-                // Show assignment badge if note is assigned
-                const assignedBadge = note.assigned_to && note.assigned_to_name
-                    ? `<div class="note-assigned-badge">Assigned to: ${note.assigned_to_name}</div>`
-                    : '';
-
-                // Strip @mentions from content since we show assignment separately
-                const displayContent = this.stripMentions(note.content);
-
-                html += `
-                    <div class="note-item ${completedClass}" data-note-id="${note.id}" data-selector="${note.element_selector}">
-                        <div class="note-header">
-                            <span class="note-author">${note.user_name}</span>
-                            <span class="note-date">${date}</span>
-                        </div>
-                        <div class="note-content">${displayContent}</div>
-                        ${assignedBadge}
-                        <div class="note-actions">
-                            <button class="note-btn note-btn-edit">Edit</button>
-                            <button class="note-btn note-btn-complete">${note.status === 'completed' ? 'Reopen' : 'Complete'}</button>
-                            <button class="note-btn note-btn-delete">Delete</button>
-                        </div>
-                    </div>
-                `;
+                html += this.renderNote(note, notes);
             });
 
             notesList.innerHTML = html;
+        },
+
+        /**
+         * RENDER NOTE
+         * Renders a single note with its replies
+         */
+        renderNote: function(note, allNotes) {
+            const completedClass = note.status === 'completed' ? 'completed' : '';
+            const contextOnlyClass = note.is_context_only ? 'context-only' : '';
+            const date = new Date(note.created_at).toLocaleDateString();
+
+            // Show assignment badge if note is assigned
+            const assignedBadge = note.assigned_to && note.assigned_to_name
+                ? `<div class="note-assigned-badge">Assigned to: ${note.assigned_to_name}</div>`
+                : '';
+
+            // Show context indicator for notes shown only for threading context
+            const contextBadge = note.is_context_only
+                ? `<div class="note-context-badge" title="This note is shown for context only">Context</div>`
+                : '';
+
+            // Strip @mentions from content since we show assignment separately
+            const strippedContent = this.stripMentions(note.content);
+            // Format quoted content (convert > lines to blockquotes)
+            const displayContent = this.formatQuotedContent(strippedContent);
+
+            // Get ALL replies in this thread (any depth) - we'll show them linearly
+            const replies = this.getAllRepliesInThread(note.id, allNotes);
+            replies.sort((a, b) => new Date(a.created_at) - new Date(b.created_at)); // Chronological order
+
+            // Build reply count toggle
+            let replyToggle = '';
+            let repliesHtml = '';
+            if (replies.length > 0) {
+                const isExpanded = this.expandedReplies.has(parseInt(note.id));
+                const toggleIcon = isExpanded ? '▼' : '▶';
+                const toggleText = replies.length === 1 ? '1 reply' : `${replies.length} replies`;
+
+                replyToggle = `
+                    <button class="note-replies-toggle" data-note-id="${note.id}">
+                        <span class="toggle-icon">${toggleIcon}</span> ${toggleText}
+                    </button>
+                `;
+
+                // Build replies HTML - all stacked linearly
+                if (isExpanded) {
+                    repliesHtml = '<div class="note-replies">';
+                    replies.forEach(reply => {
+                        const replyDate = new Date(reply.created_at).toLocaleDateString();
+                        const replyStripped = this.stripMentions(reply.content);
+                        const replyContent = this.formatQuotedContent(replyStripped);
+                        const replyCompletedClass = reply.status === 'completed' ? 'completed' : '';
+
+                        // If this is a reply to another reply, show "replying to [Name]" label
+                        let replyingToLabel = '';
+                        if (reply.parent_id != note.id) {
+                            // This is a nested reply - find the parent
+                            const parentReply = allNotes.find(n => n.id == reply.parent_id);
+                            if (parentReply) {
+                                replyingToLabel = `<div class="replying-to-label">replying to ${parentReply.user_name}</div>`;
+                            }
+                        }
+
+                        // Check if this reply has replies of its own
+                        const replyHasReplies = this.getAllRepliesInThread(reply.id, allNotes).length > 0;
+                        const replyDeleteBtn = replyHasReplies
+                            ? '<button class="note-btn note-btn-delete" disabled title="Cannot delete - this note has replies">Delete</button>'
+                            : '<button class="note-btn note-btn-delete">Delete</button>';
+
+                        // Check if current user owns this reply
+                        const replyIsOwnedByCurrentUser = reply.user_id == pageNotesData.currentUserId;
+
+                        // Context-only replies: hide action buttons, add badge
+                        const replyContextOnlyClass = reply.is_context_only ? 'context-only' : '';
+                        const replyContextBadge = reply.is_context_only
+                            ? `<div class="note-context-badge" title="This note is shown for context only">Context</div>`
+                            : '';
+
+                        // Build action buttons - only show Edit and Delete for note owner
+                        let replyActions = '';
+                        if (!reply.is_context_only) {
+                            const editBtn = replyIsOwnedByCurrentUser ? '<button class="note-btn note-btn-edit">Edit</button>' : '';
+                            const deleteButton = replyIsOwnedByCurrentUser ? replyDeleteBtn : '';
+
+                            replyActions = `
+                                <div class="note-actions">
+                                    <button class="note-btn note-btn-reply">Reply</button>
+                                    ${editBtn}
+                                    <button class="note-btn note-btn-complete">${reply.status === 'completed' ? 'Reopen' : 'Complete'}</button>
+                                    ${deleteButton}
+                                </div>
+                            `;
+                        }
+
+                        repliesHtml += `
+                            <div class="note-item note-reply ${replyCompletedClass} ${replyContextOnlyClass}" data-note-id="${reply.id}" data-selector="${reply.element_selector}" data-parent-id="${reply.parent_id}">
+                                ${replyingToLabel}
+                                <div class="note-header">
+                                    <span class="note-author">${reply.user_name}</span>
+                                    <span class="note-date">${replyDate}</span>
+                                    ${replyContextBadge}
+                                </div>
+                                <div class="note-content">${replyContent}</div>
+                                ${replyActions}
+                            </div>
+                        `;
+                    });
+                    repliesHtml += '</div>';
+                }
+            }
+
+            // Disable delete button if note has replies
+            const hasReplies = replies.length > 0;
+            const deleteBtn = hasReplies
+                ? '<button class="note-btn note-btn-delete" disabled title="Cannot delete - this note has replies">Delete</button>'
+                : '<button class="note-btn note-btn-delete">Delete</button>';
+
+            // Check if current user owns this note
+            const noteIsOwnedByCurrentUser = note.user_id == pageNotesData.currentUserId;
+
+            // Build action buttons - only show Edit and Delete for note owner
+            let noteActions = '';
+            if (!note.is_context_only) {
+                const editBtn = noteIsOwnedByCurrentUser ? '<button class="note-btn note-btn-edit">Edit</button>' : '';
+                const deleteButton = noteIsOwnedByCurrentUser ? deleteBtn : '';
+
+                noteActions = `
+                    <div class="note-actions">
+                        <button class="note-btn note-btn-reply">Reply</button>
+                        ${editBtn}
+                        <button class="note-btn note-btn-complete">${note.status === 'completed' ? 'Reopen' : 'Complete'}</button>
+                        ${deleteButton}
+                    </div>
+                `;
+            }
+
+            return `
+                <div class="note-item ${completedClass} ${contextOnlyClass}" data-note-id="${note.id}" data-selector="${note.element_selector}">
+                    <div class="note-header">
+                        <span class="note-author">${note.user_name}</span>
+                        <span class="note-date">${date}</span>
+                        ${contextBadge}
+                    </div>
+                    <div class="note-content">${displayContent}</div>
+                    ${assignedBadge}
+                    ${noteActions}
+                    ${replyToggle}
+                    ${repliesHtml}
+                </div>
+            `;
+        },
+
+        /**
+         * Get all replies in a thread (recursively finds nested replies)
+         * Returns a flat array of all replies at any depth
+         */
+        getAllRepliesInThread: function(parentNoteId, allNotes) {
+            const replies = [];
+            const directReplies = allNotes.filter(n => n.parent_id == parentNoteId);
+
+            directReplies.forEach(reply => {
+                replies.push(reply);
+                // Recursively get replies to this reply
+                const nestedReplies = this.getAllRepliesInThread(reply.id, allNotes);
+                replies.push(...nestedReplies);
+            });
+
+            return replies;
         },
         
         /**
@@ -838,21 +1198,24 @@
             // find() searches the array for the first item that matches
             const note = this.currentNotes.find(n => n.id == noteId);
             if (!note) return;
-            
+
             // Pre-fill the form with existing content
             const formTitle = document.querySelector('.note-form h3');
             const textarea = document.querySelector('.note-form-textarea');
             const saveButton = document.querySelector('.note-form-btn-save');
-            
+
             formTitle.textContent = 'Edit Note';
             textarea.value = note.content;
             document.querySelector('.note-form-overlay').classList.add('active');
-            
+
+            // Update character counter
+            textarea.dispatchEvent(new Event('input'));
+
             // Change save button behavior to update instead of create
             // First, remove the old event listener by cloning the button
             const newSaveButton = saveButton.cloneNode(true);
             saveButton.parentNode.replaceChild(newSaveButton, saveButton);
-            
+
             // Add new event listener for updating
             newSaveButton.addEventListener('click', () => {
                 this.updateNote(noteId);
@@ -956,12 +1319,12 @@
             if (!confirm('Are you sure you want to delete this note?')) {
                 return;
             }
-            
+
             const formData = new FormData();
             formData.append('action', 'pn_delete_note');
             formData.append('nonce', pageNotesData.nonce);
             formData.append('note_id', noteId);
-            
+
             fetch(pageNotesData.ajaxUrl, {
                 method: 'POST',
                 body: formData,
@@ -986,6 +1349,70 @@
                 console.error('Error:', error);
                 alert('Failed to delete note. Please check your connection and try again.');
             });
+        },
+
+        /**
+         * REPLY TO NOTE
+         * Opens the note form to reply to a specific note
+         */
+        replyToNote: function(noteId) {
+            this.replyToNoteId = noteId;
+
+            // Find the parent note we're replying to
+            const parentNote = this.currentNotes.find(n => n.id == noteId);
+            if (!parentNote) {
+                this.openNoteForm(true);
+                return;
+            }
+
+            // Get the root parent note (the main thread parent)
+            let rootParentId = parentNote.parent_id || parentNote.id;
+            if (parentNote.parent_id > 0) {
+                // This is a reply, find the original parent
+                let current = parentNote;
+                while (current.parent_id > 0) {
+                    const parent = this.currentNotes.find(n => n.id == current.parent_id);
+                    if (!parent) break;
+                    current = parent;
+                }
+                rootParentId = current.id;
+            } else {
+                rootParentId = parentNote.id;
+            }
+
+            // Get all replies in this thread
+            const allThreadReplies = this.getAllRepliesInThread(rootParentId, this.currentNotes);
+
+            // Sort by created_at to find the latest
+            const sortedReplies = allThreadReplies.slice().sort((a, b) =>
+                new Date(b.created_at) - new Date(a.created_at)
+            );
+
+            // Check if we're replying to the most recent message
+            const latestReply = sortedReplies[0];
+            const isReplyingToLatest = latestReply && latestReply.id == noteId;
+
+            // If replying to an older message (not the latest), we'll need to quote
+            const shouldQuote = !isReplyingToLatest && sortedReplies.length > 0;
+
+            this.openNoteForm(true, shouldQuote, parentNote);
+        },
+
+        /**
+         * TOGGLE REPLIES
+         * Collapse or expand replies for a note
+         */
+        toggleReplies: function(noteId) {
+            const noteIdNum = parseInt(noteId);
+
+            if (this.expandedReplies.has(noteIdNum)) {
+                this.expandedReplies.delete(noteIdNum);
+            } else {
+                this.expandedReplies.add(noteIdNum);
+            }
+
+            // Re-render the notes list to reflect the change
+            this.renderNotesList(this.currentNotes);
         },
 
         /**
@@ -1157,6 +1584,65 @@
         stripMentions: function(content) {
             // Remove @username mentions (username can have letters, numbers, underscore, hyphen)
             return content.replace(/@[\w-]+/g, '').trim();
+        },
+
+        /**
+         * SETUP CHARACTER COUNTER
+         * Initialize character counter for note textarea
+         */
+        setupCharacterCounter: function(textarea) {
+            const charCountSpan = document.querySelector('.char-count');
+            const charLimitSpan = document.querySelector('.char-limit');
+            const counterDiv = document.querySelector('.note-form-char-counter');
+
+            // Set the limit from PHP settings
+            const characterLimit = pageNotesData.characterLimit || 150;
+            if (charLimitSpan) {
+                charLimitSpan.textContent = characterLimit;
+            }
+
+            // Set maxlength on textarea
+            if (characterLimit > 0) {
+                textarea.setAttribute('maxlength', characterLimit);
+            } else {
+                textarea.removeAttribute('maxlength');
+            }
+
+            // Hide counter if limit is 0 (no limit)
+            if (characterLimit === 0 && counterDiv) {
+                counterDiv.style.display = 'none';
+                return;
+            } else if (counterDiv) {
+                counterDiv.style.display = '';
+            }
+
+            // Update counter on input
+            const updateCounter = function() {
+                const currentLength = textarea.value.length;
+
+                if (charCountSpan) {
+                    charCountSpan.textContent = currentLength;
+                }
+
+                // Add warning class when approaching limit (90% or more)
+                if (counterDiv) {
+                    if (currentLength >= characterLimit) {
+                        counterDiv.classList.add('at-limit');
+                        counterDiv.classList.remove('near-limit');
+                    } else if (currentLength >= characterLimit * 0.9) {
+                        counterDiv.classList.add('near-limit');
+                        counterDiv.classList.remove('at-limit');
+                    } else {
+                        counterDiv.classList.remove('near-limit', 'at-limit');
+                    }
+                }
+            };
+
+            // Update on input
+            textarea.addEventListener('input', updateCounter);
+
+            // Initial update
+            updateCounter();
         },
 
         /**

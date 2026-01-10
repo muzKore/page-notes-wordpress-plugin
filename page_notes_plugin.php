@@ -66,6 +66,7 @@ class PageNotes {
         add_filter('cron_schedules', array($this, 'add_cron_schedules'));
         add_action('page_notes_auto_send_notifications', array($this, 'cron_send_notifications'));
         add_action('page_notes_send_reminders', array($this, 'cron_send_reminders'));
+        add_action('page_notes_send_activity_digest', array($this, 'cron_send_activity_digest'));
         add_action('admin_init', array($this, 'schedule_cron_if_needed'));
     }
     
@@ -101,13 +102,61 @@ class PageNotes {
         require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
         dbDelta($sql);
 
+        // Create activity log table
+        $activity_table = $wpdb->prefix . 'page_notes_activity';
+        $activity_sql = "CREATE TABLE $activity_table (
+            id bigint(20) NOT NULL AUTO_INCREMENT,
+            note_id bigint(20) NOT NULL,
+            action varchar(20) NOT NULL,
+            user_id bigint(20) NOT NULL,
+            old_content text DEFAULT NULL,
+            new_content text DEFAULT NULL,
+            created_at datetime DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (id),
+            KEY note_id (note_id),
+            KEY user_id (user_id),
+            KEY action (action),
+            KEY created_at (created_at)
+        ) $charset_collate;";
+
+        dbDelta($activity_sql);
+
+        // Create completion notifications table
+        $completion_table = $wpdb->prefix . 'page_notes_completions';
+        $completion_sql = "CREATE TABLE $completion_table (
+            id bigint(20) NOT NULL AUTO_INCREMENT,
+            note_id bigint(20) NOT NULL,
+            completed_by bigint(20) NOT NULL,
+            note_creator bigint(20) NOT NULL,
+            notification_sent tinyint(1) DEFAULT 0,
+            created_at datetime DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (id),
+            KEY note_id (note_id),
+            KEY completed_by (completed_by),
+            KEY note_creator (note_creator),
+            KEY notification_sent (notification_sent)
+        ) $charset_collate;";
+
+        dbDelta($completion_sql);
+
         // Update plugin version in database
         update_option('page_notes_db_version', PAGE_NOTES_VERSION);
 
         // Schedule daily reminder cron if not already scheduled
         if (!wp_next_scheduled('page_notes_send_reminders')) {
             $reminder_time = get_option('page_notes_reminder_time', '09:00');
-            $timestamp = strtotime('tomorrow ' . $reminder_time);
+
+            // Calculate next occurrence using WordPress timezone
+            $timezone = wp_timezone();
+            $now = new DateTime('now', $timezone);
+            $target = new DateTime($now->format('Y-m-d') . ' ' . $reminder_time, $timezone);
+
+            // If target time has passed today, schedule for tomorrow
+            if ($target->getTimestamp() <= $now->getTimestamp()) {
+                $target->modify('+1 day');
+            }
+
+            $timestamp = $target->getTimestamp();
             wp_schedule_event($timestamp, 'daily', 'page_notes_send_reminders');
         }
     }
@@ -134,13 +183,41 @@ class PageNotes {
      */
     public static function uninstall() {
         global $wpdb;
-        $table_name = $wpdb->prefix . 'page_notes';
 
-        // Drop the custom table
-        $wpdb->query("DROP TABLE IF EXISTS $table_name");
+        // Drop the custom tables
+        $notes_table = $wpdb->prefix . 'page_notes';
+        $activity_table = $wpdb->prefix . 'page_notes_activity';
+        $completion_table = $wpdb->prefix . 'page_notes_completions';
+        $wpdb->query("DROP TABLE IF EXISTS $notes_table");
+        $wpdb->query("DROP TABLE IF EXISTS $activity_table");
+        $wpdb->query("DROP TABLE IF EXISTS $completion_table");
 
-        // Clean up any options if we add them in the future
+        // Delete all plugin options
         delete_option('page_notes_version');
+        delete_option('page_notes_db_version');
+        delete_option('page_notes_allowed_roles');
+        delete_option('page_notes_manager_user_id');
+        delete_option('page_notes_instant_email');
+        delete_option('page_notes_auto_send_interval');
+        delete_option('page_notes_reminders_enabled');
+        delete_option('page_notes_reminder_time');
+        delete_option('page_notes_character_limit');
+        delete_option('page_notes_activity_digest_enabled');
+        delete_option('page_notes_completion_notification');
+        delete_option('page_notes_cron_interval');
+        delete_option('page_notes_reminder_time_stored');
+
+        // Delete all user meta for all users
+        $wpdb->query("DELETE FROM {$wpdb->usermeta} WHERE meta_key = 'page_notes_enabled'");
+        $wpdb->query("DELETE FROM {$wpdb->usermeta} WHERE meta_key = 'page_notes_individual_access'");
+        $wpdb->query("DELETE FROM {$wpdb->usermeta} WHERE meta_key = 'page_notes_reminders_enabled'");
+        $wpdb->query("DELETE FROM {$wpdb->usermeta} WHERE meta_key = 'page_notes_reminder_interval'");
+        $wpdb->query("DELETE FROM {$wpdb->usermeta} WHERE meta_key = 'page_notes_last_reminder_sent'");
+
+        // Clear all scheduled cron events
+        wp_clear_scheduled_hook('page_notes_auto_send_notifications');
+        wp_clear_scheduled_hook('page_notes_send_reminders');
+        wp_clear_scheduled_hook('page_notes_send_activity_digest');
     }
     
     /**
@@ -214,7 +291,8 @@ class PageNotes {
             'currentPageId' => get_queried_object_id(),
             'currentPageUrl' => get_permalink(),
             'currentUserId' => get_current_user_id(),
-            'currentUserName' => wp_get_current_user()->display_name
+            'currentUserName' => wp_get_current_user()->display_name,
+            'characterLimit' => intval(get_option('page_notes_character_limit', '150'))
         ));
     }
     
@@ -252,10 +330,15 @@ class PageNotes {
             $page_url
         ));
 
-        // Filter notes based on visibility rules
+        // Filter notes based on visibility rules with thread context
         $visible_notes = array();
+        $context_parent_ids = array(); // Track parent notes that need to be shown for context
 
+        // First pass: identify notes user can directly see
+        $directly_visible_ids = array();
         foreach ($notes as $note) {
+            $visible = false;
+
             // Notes Manager sees everything
             if ($is_manager) {
                 $visible = true;
@@ -272,12 +355,23 @@ class PageNotes {
             elseif (empty($note->assigned_to) || $note->assigned_to == 0) {
                 $visible = true;
             }
-            // All other notes are hidden
-            else {
-                $visible = false;
-            }
 
             if ($visible) {
+                $directly_visible_ids[] = $note->id;
+
+                // If this is a reply, mark its parent for context inclusion
+                if (!empty($note->parent_id) && $note->parent_id > 0) {
+                    $context_parent_ids[] = $note->parent_id;
+                }
+            }
+        }
+
+        // Second pass: build final visible notes list with context markers
+        foreach ($notes as $note) {
+            $is_directly_visible = in_array($note->id, $directly_visible_ids);
+            $is_context_only = !$is_directly_visible && in_array($note->id, $context_parent_ids);
+
+            if ($is_directly_visible || $is_context_only) {
                 // Build better display names using first/last names with fallback
                 $note->user_name = esc_html($note->user_name);
                 $note->element_selector = esc_attr($note->element_selector);
@@ -289,6 +383,9 @@ class PageNotes {
                 } else {
                     $note->assigned_to_name = '';
                 }
+
+                // Mark context-only notes so frontend can style them differently
+                $note->is_context_only = $is_context_only;
 
                 $visible_notes[] = $note;
             }
@@ -329,6 +426,13 @@ class PageNotes {
             return;
         }
 
+        // Validate character limit
+        $character_limit = intval(get_option('page_notes_character_limit', '150'));
+        if ($character_limit > 0 && mb_strlen($content) > $character_limit) {
+            wp_send_json_error(sprintf('Note content exceeds the maximum limit of %d characters', $character_limit));
+            return;
+        }
+
         // Validate element_selector is not empty
         if (empty($element_selector)) {
             wp_send_json_error('Element selector cannot be empty');
@@ -363,8 +467,55 @@ class PageNotes {
         if ($result) {
             $note_id = $wpdb->insert_id;
 
-            // Check if instant email is enabled and note is assigned
+            // Log activity
+            $this->log_activity($note_id, 'created', null, $content);
+
+            // Check if instant email is enabled
             $instant_email = get_option('page_notes_instant_email', '0');
+
+            // Handle reply notifications (if this is a reply)
+            $parent_id = isset($_POST['parent_id']) ? intval($_POST['parent_id']) : 0;
+            if ($instant_email === '1' && $parent_id > 0) {
+                // This is a reply - notify the parent note author
+                $parent_note = $wpdb->get_row($wpdb->prepare(
+                    "SELECT n.*, creator.user_email, creator.ID as creator_id
+                    FROM $table_name n
+                    LEFT JOIN {$wpdb->users} creator ON n.user_id = creator.ID
+                    WHERE n.id = %d",
+                    $parent_id
+                ));
+
+                if ($parent_note && !empty($parent_note->user_email)) {
+                    $parent_author_name = $this->get_user_display_name($parent_note->creator_id);
+
+                    // Get the reply note details
+                    $reply_note = $wpdb->get_row($wpdb->prepare(
+                        "SELECT n.*, creator.ID as creator_id
+                        FROM $table_name n
+                        LEFT JOIN {$wpdb->users} creator ON n.user_id = creator.ID
+                        WHERE n.id = %d",
+                        $note_id
+                    ));
+
+                    if ($reply_note) {
+                        $this->send_reply_notification_email(
+                            $parent_note->user_email,
+                            $parent_author_name,
+                            $parent_note,
+                            $reply_note
+                        );
+
+                        // Mark reply as sent
+                        $wpdb->update(
+                            $table_name,
+                            array('notification_sent' => 1),
+                            array('id' => $note_id)
+                        );
+                    }
+                }
+            }
+
+            // Handle assignment notifications (if note is assigned)
             if ($instant_email === '1' && !empty($assigned_to)) {
                 // Send notification immediately
                 $assignee = get_user_by('id', $assigned_to);
@@ -477,6 +628,14 @@ class PageNotes {
                 wp_send_json_error('Note content cannot be empty');
                 return;
             }
+
+            // Validate character limit
+            $character_limit = intval(get_option('page_notes_character_limit', '150'));
+            if ($character_limit > 0 && mb_strlen($content) > $character_limit) {
+                wp_send_json_error(sprintf('Note content exceeds the maximum limit of %d characters', $character_limit));
+                return;
+            }
+
             $data['content'] = $content;
         }
 
@@ -504,6 +663,17 @@ class PageNotes {
         );
 
         if ($result !== false) {
+            // Log activity if content was changed
+            if (isset($data['content'])) {
+                $this->log_activity($note_id, 'edited', $note->content, $data['content']);
+            }
+
+            // Handle completion notification
+            if (isset($data['status']) && $data['status'] === 'completed' && $note->status !== 'completed') {
+                // Status changed from not completed to completed
+                $this->handle_completion_notification($note_id, $note->user_id, get_current_user_id());
+            }
+
             wp_send_json_success('Note updated');
         } else {
             wp_send_json_error('Failed to update note');
@@ -547,6 +717,9 @@ class PageNotes {
             wp_send_json_error('Permission denied');
             return;
         }
+
+        // Log activity before deleting
+        $this->log_activity($note_id, 'deleted', $note->content, null);
 
         $result = $wpdb->delete($table_name, array('id' => $note_id));
 
@@ -661,6 +834,12 @@ class PageNotes {
             return false;
         }
 
+        // Check for individual user override first (allows specific users regardless of role)
+        $individual_access = get_user_meta($user->ID, 'page_notes_individual_access', true);
+        if ($individual_access === '1') {
+            return true;
+        }
+
         // Get allowed roles from settings (default to administrator only)
         $allowed_roles = get_option('page_notes_allowed_roles', array('administrator'));
         if (!is_array($allowed_roles)) {
@@ -708,8 +887,38 @@ class PageNotes {
      * Add Page Notes section to user profile page
      */
     public function add_user_profile_fields($user) {
-        // Only show if user's role is allowed to use Page Notes
-        if (!$this->user_role_is_allowed($user)) {
+        $has_role_access = $this->user_role_is_allowed($user);
+        $individual_access = get_user_meta($user->ID, 'page_notes_individual_access', true);
+
+        // Check if current user can manage this - only admins can grant individual access
+        $can_manage_access = current_user_can('manage_options') && get_current_user_id() != $user->ID;
+
+        // Show individual access field for admins (when editing other users)
+        if ($can_manage_access) {
+            ?>
+            <h3>Page Notes Access</h3>
+            <table class="form-table" role="presentation">
+                <tr>
+                    <th scope="row">Grant Individual Access</th>
+                    <td>
+                        <label for="page_notes_individual_access">
+                            <input type="checkbox" name="page_notes_individual_access" id="page_notes_individual_access" value="1" <?php checked($individual_access, '1'); ?> />
+                            Grant this user access to Page Notes regardless of their role
+                        </label>
+                        <p class="description">
+                            Useful for giving specific users (e.g., Subscribers) access to Page Notes without changing their role or global role settings.
+                            <?php if (!$has_role_access && $individual_access !== '1'): ?>
+                                <strong>Currently, this user does not have access to Page Notes.</strong>
+                            <?php endif; ?>
+                        </p>
+                    </td>
+                </tr>
+            </table>
+            <?php
+        }
+
+        // Show regular Page Notes settings only if user has access (either by role or individual grant)
+        if (!$has_role_access && $individual_access !== '1') {
             return;
         }
 
@@ -721,7 +930,7 @@ class PageNotes {
 
         $reminders_enabled = get_user_meta($user->ID, 'page_notes_reminders_enabled', true);
         if ($reminders_enabled === '') {
-            $reminders_enabled = '0'; // Default to disabled
+            $reminders_enabled = '1'; // Default to enabled
         }
 
         $reminder_interval = get_user_meta($user->ID, 'page_notes_reminder_interval', true);
@@ -729,7 +938,7 @@ class PageNotes {
             $reminder_interval = '1'; // Default to daily
         }
         ?>
-        <h3>Page Notes</h3>
+        <h3>Page Notes Settings</h3>
         <table class="form-table" role="presentation">
             <tr>
                 <th scope="row">Enable Page Notes</th>
@@ -780,6 +989,12 @@ class PageNotes {
             return false;
         }
 
+        // Only admins can grant individual access (and not to themselves)
+        if (current_user_can('manage_options') && get_current_user_id() != $user_id) {
+            $individual_access = isset($_POST['page_notes_individual_access']) ? '1' : '0';
+            update_user_meta($user_id, 'page_notes_individual_access', $individual_access);
+        }
+
         // Save the checkbox values
         $enabled = isset($_POST['page_notes_enabled']) ? '1' : '0';
         update_user_meta($user_id, 'page_notes_enabled', $enabled);
@@ -824,6 +1039,9 @@ class PageNotes {
         register_setting('page_notes_settings', 'page_notes_auto_send_interval');
         register_setting('page_notes_settings', 'page_notes_reminders_enabled');
         register_setting('page_notes_settings', 'page_notes_reminder_time');
+        register_setting('page_notes_settings', 'page_notes_character_limit');
+        register_setting('page_notes_settings', 'page_notes_activity_digest_enabled');
+        register_setting('page_notes_settings', 'page_notes_completion_notification');
     }
 
     /**
@@ -1011,6 +1229,58 @@ class PageNotes {
                                 </p>
                             </td>
                         </tr>
+                        <tr>
+                            <th scope="row">Daily Activity Digest</th>
+                            <td>
+                                <?php
+                                $activity_digest_enabled = get_option('page_notes_activity_digest_enabled', '0');
+                                ?>
+                                <label for="page_notes_activity_digest_enabled">
+                                    <input type="checkbox" name="page_notes_activity_digest_enabled" id="page_notes_activity_digest_enabled" value="1" <?php checked($activity_digest_enabled, '1'); ?> />
+                                    Send daily activity digest to Notes Manager
+                                </label>
+                                <p class="description">
+                                    When enabled, the Notes Manager will receive a daily email summary of all notes created, edited, and deleted in the last 24 hours. Sent at the same time as task reminders.
+                                </p>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th scope="row">Task Completion Notifications</th>
+                            <td>
+                                <?php
+                                $completion_notification = get_option('page_notes_completion_notification', 'instant');
+                                ?>
+                                <select name="page_notes_completion_notification" id="page_notes_completion_notification">
+                                    <option value="instant" <?php selected($completion_notification, 'instant'); ?>>Send instant email to note creator</option>
+                                    <option value="pending" <?php selected($completion_notification, 'pending'); ?>>Add to pending notifications</option>
+                                    <option value="disabled" <?php selected($completion_notification, 'disabled'); ?>>Disabled</option>
+                                </select>
+                                <p class="description">
+                                    How to notify the original note creator when someone completes their task. Instant sends immediately, pending adds to the batch queue, disabled sends no notification.
+                                </p>
+                            </td>
+                        </tr>
+                    </table>
+                </div>
+
+                <div class="card" style="margin-top: 20px;">
+                    <h2>Content Settings</h2>
+                    <p>Configure content restrictions and limits for notes.</p>
+
+                    <table class="form-table">
+                        <tr>
+                            <th scope="row">Note Character Limit</th>
+                            <td>
+                                <?php
+                                $character_limit = get_option('page_notes_character_limit', '150');
+                                ?>
+                                <input type="number" name="page_notes_character_limit" id="page_notes_character_limit" value="<?php echo esc_attr($character_limit); ?>" min="50" max="10000" step="50" style="width: 100px;" />
+                                characters
+                                <p class="description">
+                                    Maximum number of characters allowed per note. Set to 0 for no limit. Default: 150 characters. Recommended range: 150-500 characters.
+                                </p>
+                            </td>
+                        </tr>
                     </table>
                 </div>
 
@@ -1026,12 +1296,124 @@ class PageNotes {
                     </tr>
                     <tr>
                         <th scope="row">Plugin Directory</th>
-                        <td><code><?php echo esc_html(PAGE_NOTES_PLUGIN_DIR); ?></code></td>
+                        <td><code style="word-break: break-all;"><?php echo esc_html(PAGE_NOTES_PLUGIN_DIR); ?></code></td>
                     </tr>
                 </table>
             </div>
         </div>
         <?php
+    }
+
+    /**
+     * Log note activity for digest emails
+     */
+    private function log_activity($note_id, $action, $old_content = null, $new_content = null) {
+        global $wpdb;
+        $activity_table = $wpdb->prefix . 'page_notes_activity';
+
+        $wpdb->insert($activity_table, array(
+            'note_id' => $note_id,
+            'action' => $action,
+            'user_id' => get_current_user_id(),
+            'old_content' => $old_content,
+            'new_content' => $new_content
+        ));
+    }
+
+    /**
+     * Handle completion notification when a note is marked as completed
+     */
+    private function handle_completion_notification($note_id, $note_creator_id, $completed_by_id) {
+        global $wpdb;
+
+        // Don't notify if the creator completed their own note
+        if ($note_creator_id == $completed_by_id) {
+            return;
+        }
+
+        // Get the notification setting
+        $notification_type = get_option('page_notes_completion_notification', 'instant');
+
+        // If disabled, do nothing
+        if ($notification_type === 'disabled') {
+            return;
+        }
+
+        // Record the completion
+        $completion_table = $wpdb->prefix . 'page_notes_completions';
+        $wpdb->insert($completion_table, array(
+            'note_id' => $note_id,
+            'completed_by' => $completed_by_id,
+            'note_creator' => $note_creator_id,
+            'notification_sent' => ($notification_type === 'instant') ? 0 : 0
+        ));
+
+        // Send instant email if configured
+        if ($notification_type === 'instant') {
+            $this->send_completion_email($note_id, $note_creator_id, $completed_by_id);
+
+            // Mark as sent
+            $wpdb->update(
+                $completion_table,
+                array('notification_sent' => 1),
+                array(
+                    'note_id' => $note_id,
+                    'completed_by' => $completed_by_id,
+                    'note_creator' => $note_creator_id
+                )
+            );
+        }
+        // If 'pending', it will be picked up by the pending notifications batch
+    }
+
+    /**
+     * Send email notification when a task is completed
+     */
+    private function send_completion_email($note_id, $note_creator_id, $completed_by_id) {
+        global $wpdb;
+        $table_name = $wpdb->prefix . 'page_notes';
+
+        // Get the note details
+        $note = $wpdb->get_row($wpdb->prepare(
+            "SELECT * FROM $table_name WHERE id = %d",
+            $note_id
+        ));
+
+        if (!$note) {
+            return;
+        }
+
+        // Get user info
+        $creator = get_userdata($note_creator_id);
+        $completer = get_userdata($completed_by_id);
+
+        if (!$creator || !$completer) {
+            return;
+        }
+
+        $completer_name = $this->get_user_display_name($completed_by_id);
+        $page_title = get_the_title($note->page_id) ?: 'Unknown Page';
+        $page_url = $note->page_url;
+
+        // Build email
+        $subject = sprintf('[Page Notes] Task completed on "%s"', $page_title);
+
+        $message = sprintf(
+            "Hi %s,\n\n" .
+            "%s has marked your note as completed.\n\n" .
+            "Note content:\n%s\n\n" .
+            "Page: %s\n" .
+            "View the page: %s\n\n" .
+            "---\n" .
+            "This is an automated notification from Page Notes.",
+            $creator->display_name,
+            $completer_name,
+            $note->content,
+            $page_title,
+            $page_url
+        );
+
+        wp_mail($creator->user_email, $subject, $message);
     }
 
     /**
@@ -1195,9 +1577,10 @@ class PageNotes {
 
         global $wpdb;
         $table_name = $wpdb->prefix . 'page_notes';
+        $completion_table = $wpdb->prefix . 'page_notes_completions';
 
-        // Count pending notifications
-        $count = $wpdb->get_var(
+        // Count pending assignment notifications
+        $assignment_count = $wpdb->get_var(
             "SELECT COUNT(*)
             FROM $table_name
             WHERE assigned_to IS NOT NULL
@@ -1205,15 +1588,33 @@ class PageNotes {
             AND notification_sent = 0"
         );
 
+        // Count pending reply notifications
+        $reply_count = $wpdb->get_var(
+            "SELECT COUNT(*)
+            FROM $table_name
+            WHERE parent_id > 0
+            AND notification_sent = 0"
+        );
+
+        // Count pending completion notifications
+        $completion_count = $wpdb->get_var(
+            "SELECT COUNT(*)
+            FROM $completion_table
+            WHERE notification_sent = 0"
+        );
+
+        $total_count = intval($assignment_count) + intval($reply_count) + intval($completion_count);
+
         wp_send_json_success(array(
-            'has_pending' => $count > 0,
-            'count' => intval($count)
+            'has_pending' => $total_count > 0,
+            'count' => $total_count
         ));
     }
 
     /**
      * Send pending email notifications
      * Groups notes by recipient and page for a clean email experience
+     * Includes both assignment notifications and reply notifications
      */
     public function send_pending_notifications() {
         global $wpdb;
@@ -1236,11 +1637,44 @@ class PageNotes {
             ORDER BY assignee.ID, n.page_url, n.created_at ASC"
         );
 
-        if (empty($pending_notes)) {
+        // Get all replies with pending notifications
+        $pending_replies = $wpdb->get_results(
+            "SELECT n.*,
+                creator.display_name as reply_author_name,
+                creator.ID as reply_author_id,
+                parent.user_id as parent_author_id,
+                parent_user.user_email as parent_author_email
+            FROM $table_name n
+            LEFT JOIN {$wpdb->users} creator ON n.user_id = creator.ID
+            LEFT JOIN $table_name parent ON n.parent_id = parent.id
+            LEFT JOIN {$wpdb->users} parent_user ON parent.user_id = parent_user.ID
+            WHERE n.parent_id > 0
+            AND n.notification_sent = 0
+            ORDER BY parent_author_id, n.created_at ASC"
+        );
+
+        // Get all pending completion notifications
+        $completion_table = $wpdb->prefix . 'page_notes_completions';
+        $pending_completions = $wpdb->get_results(
+            "SELECT c.*,
+                n.content as note_content,
+                n.page_id,
+                n.page_url,
+                completer.display_name as completer_name,
+                creator.user_email as creator_email
+            FROM $completion_table c
+            LEFT JOIN $table_name n ON c.note_id = n.id
+            LEFT JOIN {$wpdb->users} completer ON c.completed_by = completer.ID
+            LEFT JOIN {$wpdb->users} creator ON c.note_creator = creator.ID
+            WHERE c.notification_sent = 0
+            ORDER BY c.note_creator, c.created_at ASC"
+        );
+
+        if (empty($pending_notes) && empty($pending_replies) && empty($pending_completions)) {
             return array('sent' => 0, 'recipients' => 0);
         }
 
-        // Group notes by recipient
+        // Group assignment notes by recipient
         $notes_by_recipient = array();
         foreach ($pending_notes as $note) {
             if (empty($note->assignee_email)) {
@@ -1258,7 +1692,25 @@ class PageNotes {
             $notes_by_recipient[$note->assignee_id]['notes'][] = $note;
         }
 
-        // Send one email per recipient
+        // Group replies by parent note author
+        $replies_by_recipient = array();
+        foreach ($pending_replies as $reply) {
+            if (empty($reply->parent_author_email) || empty($reply->parent_author_id)) {
+                continue; // Skip if parent author doesn't exist
+            }
+
+            if (!isset($replies_by_recipient[$reply->parent_author_id])) {
+                $replies_by_recipient[$reply->parent_author_id] = array(
+                    'email' => $reply->parent_author_email,
+                    'name' => $this->get_user_display_name($reply->parent_author_id),
+                    'replies' => array()
+                );
+            }
+
+            $replies_by_recipient[$reply->parent_author_id]['replies'][] = $reply;
+        }
+
+        // Send one email per recipient for assignments
         $sent_count = 0;
         $note_ids_to_mark = array();
 
@@ -1278,16 +1730,287 @@ class PageNotes {
             }
         }
 
+        // Send reply notifications
+        foreach ($replies_by_recipient as $recipient_id => $recipient_data) {
+            foreach ($recipient_data['replies'] as $reply) {
+                // Get parent note details
+                $parent_note = $wpdb->get_row($wpdb->prepare(
+                    "SELECT n.*
+                    FROM $table_name n
+                    WHERE n.id = %d",
+                    $reply->parent_id
+                ));
+
+                if ($parent_note) {
+                    $email_sent = $this->send_reply_notification_email(
+                        $recipient_data['email'],
+                        $recipient_data['name'],
+                        $parent_note,
+                        $reply
+                    );
+
+                    if ($email_sent) {
+                        $sent_count++;
+                        $note_ids_to_mark[] = intval($reply->id);
+                    }
+                }
+            }
+        }
+
+        // Send completion notifications
+        $completion_ids_to_mark = array();
+        foreach ($pending_completions as $completion) {
+            if (empty($completion->creator_email)) {
+                continue; // Skip if creator doesn't exist
+            }
+
+            $email_sent = $this->send_completion_email(
+                $completion->note_id,
+                $completion->note_creator,
+                $completion->completed_by
+            );
+
+            if ($email_sent) {
+                $sent_count++;
+                $completion_ids_to_mark[] = intval($completion->id);
+            }
+        }
+
         // Mark all sent notifications
         if (!empty($note_ids_to_mark)) {
             $ids_string = implode(',', $note_ids_to_mark);
             $wpdb->query("UPDATE $table_name SET notification_sent = 1 WHERE id IN ($ids_string)");
         }
 
+        // Mark completion notifications as sent
+        if (!empty($completion_ids_to_mark)) {
+            $ids_string = implode(',', $completion_ids_to_mark);
+            $wpdb->query("UPDATE $completion_table SET notification_sent = 1 WHERE id IN ($ids_string)");
+        }
+
         return array(
             'sent' => count($note_ids_to_mark),
             'recipients' => $sent_count
         );
+    }
+
+    /**
+     * Send reply notification email
+     * Notifies the parent note author that someone replied to their note
+     */
+    private function send_reply_notification_email($to_email, $to_name, $parent_note, $reply_note) {
+        // Get page title
+        $page_title = '';
+        if (!empty($parent_note->page_url)) {
+            $post_id = url_to_postid($parent_note->page_url);
+            if ($post_id > 0) {
+                $page_title = get_the_title($post_id);
+            }
+        }
+
+        if (empty($page_title) && $parent_note->page_id > 0) {
+            $post = get_post($parent_note->page_id);
+            if ($post && $post->post_status !== 'trash') {
+                $page_title = get_the_title($parent_note->page_id);
+            }
+        }
+
+        if (empty($page_title) && !empty($parent_note->page_url)) {
+            $parsed = parse_url($parent_note->page_url);
+            if (isset($parsed['path'])) {
+                $path = trim($parsed['path'], '/');
+                $page_title = $path ? ucwords(str_replace(['-', '_', '/'], ' ', $path)) : 'Home';
+            }
+        }
+
+        $page_title = $page_title ?: 'Unknown Page';
+
+        // Get reply author name
+        $reply_author_name = $this->get_user_display_name($reply_note->creator_id);
+
+        // Site info
+        $site_name = get_bloginfo('name');
+
+        // Build email subject
+        $subject = sprintf('Reply to your note on %s', $site_name);
+
+        // Build email body
+        $message = $this->build_reply_email_template(
+            $to_name,
+            $reply_author_name,
+            $parent_note,
+            $reply_note,
+            $page_title,
+            $parent_note->page_url
+        );
+
+        // Email headers
+        $headers = array(
+            'Content-Type: text/html; charset=UTF-8',
+            'From: ' . get_bloginfo('name') . ' <' . get_option('admin_email') . '>'
+        );
+
+        // Send email
+        return wp_mail($to_email, $subject, $message, $headers);
+    }
+
+    /**
+     * Build HTML email template for reply notifications
+     */
+    private function build_reply_email_template($to_name, $reply_author_name, $parent_note, $reply_note, $page_title, $page_url) {
+        $site_name = get_bloginfo('name');
+        $site_url = get_site_url();
+
+        // Strip @mentions from displayed content
+        $parent_content = preg_replace('/@[\w-]+/', '', $parent_note->content);
+        $parent_content = trim($parent_content);
+        $reply_content = preg_replace('/@[\w-]+/', '', $reply_note->content);
+        $reply_content = trim($reply_content);
+
+        ob_start();
+        ?>
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <style>
+                body {
+                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+                    line-height: 1.6;
+                    color: #333;
+                    max-width: 600px;
+                    margin: 0 auto;
+                    padding: 20px;
+                }
+                .header {
+                    background: #6c757d;
+                    color: white;
+                    padding: 20px;
+                    border-radius: 5px 5px 0 0;
+                }
+                .header h1 {
+                    margin: 0;
+                    font-size: 24px;
+                }
+                .content {
+                    background: #f8f9fa;
+                    padding: 20px;
+                    border: 1px solid #dee2e6;
+                    border-top: none;
+                }
+                .greeting {
+                    font-size: 16px;
+                    margin-bottom: 20px;
+                }
+                .divider {
+                    border-top: 2px solid #6c757d;
+                    margin: 20px 0;
+                }
+                .page-section {
+                    margin-bottom: 25px;
+                }
+                .page-title {
+                    font-size: 18px;
+                    font-weight: 600;
+                    color: #495057;
+                    margin-bottom: 10px;
+                }
+                .page-link {
+                    display: inline-block;
+                    color: #0073aa;
+                    text-decoration: none;
+                    font-size: 14px;
+                    margin-bottom: 15px;
+                }
+                .page-link:hover {
+                    text-decoration: underline;
+                }
+                .note-box {
+                    background: white;
+                    padding: 15px;
+                    margin-bottom: 15px;
+                    border-left: 3px solid #ffc107;
+                    border-radius: 3px;
+                }
+                .note-label {
+                    font-size: 12px;
+                    font-weight: 600;
+                    color: #6c757d;
+                    text-transform: uppercase;
+                    margin-bottom: 8px;
+                }
+                .note-content {
+                    margin: 0 0 8px 0;
+                    font-size: 14px;
+                }
+                .reply-box {
+                    background: white;
+                    padding: 15px;
+                    margin-left: 20px;
+                    border-left: 3px solid #6c757d;
+                    border-radius: 3px;
+                }
+                .reply-author {
+                    font-size: 12px;
+                    color: #666;
+                    font-weight: 600;
+                    margin-bottom: 8px;
+                }
+                .footer {
+                    background: #f8f9fa;
+                    padding: 15px 20px;
+                    border: 1px solid #dee2e6;
+                    border-top: none;
+                    border-radius: 0 0 5px 5px;
+                    text-align: center;
+                    font-size: 12px;
+                    color: #666;
+                }
+                .footer a {
+                    color: #0073aa;
+                    text-decoration: none;
+                }
+            </style>
+        </head>
+        <body>
+            <div class="header">
+                <h1>💬 Reply to Your Note</h1>
+            </div>
+
+            <div class="content">
+                <div class="greeting">
+                    Hi <?php echo esc_html($to_name); ?>,
+                </div>
+
+                <p><strong><?php echo esc_html($reply_author_name); ?></strong> replied to your note:</p>
+
+                <div class="divider"></div>
+
+                <div class="page-section">
+                    <div class="page-title"><?php echo esc_html($page_title); ?></div>
+                    <a href="<?php echo esc_url($page_url); ?>" class="page-link">View Page &rarr;</a>
+
+                    <div class="note-box">
+                        <div class="note-label">Your Original Note:</div>
+                        <p class="note-content"><?php echo nl2br(esc_html($parent_content)); ?></p>
+                    </div>
+
+                    <div class="reply-box">
+                        <div class="reply-author"><?php echo esc_html($reply_author_name); ?> replied:</div>
+                        <p class="note-content"><?php echo nl2br(esc_html($reply_content)); ?></p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="footer">
+                <p>This is an automated notification from <a href="<?php echo esc_url($site_url); ?>"><?php echo esc_html($site_name); ?></a></p>
+                <p>View the conversation in the Page Notes panel when you visit the page.</p>
+            </div>
+        </body>
+        </html>
+        <?php
+        return ob_get_clean();
     }
 
     /**
@@ -1582,20 +2305,58 @@ class PageNotes {
                     wp_unschedule_event($reminder_timestamp, 'page_notes_send_reminders');
                 }
 
-                // Calculate next occurrence
-                $now = current_time('timestamp');
-                $target_time = strtotime(date('Y-m-d', $now) . ' ' . $reminder_time);
+                // Calculate next occurrence using WordPress timezone
+                $timezone = wp_timezone();
+                $now = new DateTime('now', $timezone);
+                $target = new DateTime($now->format('Y-m-d') . ' ' . $reminder_time, $timezone);
 
                 // If target time has passed today, schedule for tomorrow
-                if ($target_time <= $now) {
-                    $target_time = strtotime('tomorrow ' . $reminder_time);
+                if ($target->getTimestamp() <= $now->getTimestamp()) {
+                    $target->modify('+1 day');
                 }
+
+                $target_time = $target->getTimestamp();
 
                 // Schedule new event
                 wp_schedule_event($target_time, 'daily', 'page_notes_send_reminders');
 
                 // Store the current time setting
                 update_option('page_notes_reminder_time_stored', $reminder_time);
+            }
+        }
+
+        // Handle activity digest cron scheduling (runs at same time as reminders)
+        $activity_digest_enabled = get_option('page_notes_activity_digest_enabled', '0');
+        $digest_timestamp = wp_next_scheduled('page_notes_send_activity_digest');
+
+        if ($activity_digest_enabled !== '1') {
+            // Digest disabled, clear any scheduled event
+            if ($digest_timestamp) {
+                wp_unschedule_event($digest_timestamp, 'page_notes_send_activity_digest');
+            }
+        } else {
+            // Digest enabled, ensure it's scheduled at same time as reminders
+            if (!$digest_timestamp || $stored_reminder_time !== $reminder_time) {
+                // Clear existing schedule
+                if ($digest_timestamp) {
+                    wp_unschedule_event($digest_timestamp, 'page_notes_send_activity_digest');
+                }
+
+                // Schedule at same time as reminders
+                if ($reminders_enabled === '1' && isset($target_time)) {
+                    wp_schedule_event($target_time, 'daily', 'page_notes_send_activity_digest');
+                } else {
+                    // Reminders disabled, calculate time independently
+                    $timezone = wp_timezone();
+                    $now = new DateTime('now', $timezone);
+                    $target = new DateTime($now->format('Y-m-d') . ' ' . $reminder_time, $timezone);
+
+                    if ($target->getTimestamp() <= $now->getTimestamp()) {
+                        $target->modify('+1 day');
+                    }
+
+                    wp_schedule_event($target->getTimestamp(), 'daily', 'page_notes_send_activity_digest');
+                }
             }
         }
     }
@@ -1714,6 +2475,53 @@ class PageNotes {
         }
 
         return $sent_count;
+    }
+
+    /**
+     * Cron job callback - send daily activity digest
+     * Runs daily at same time as reminders
+     */
+    public function cron_send_activity_digest() {
+        // Check if activity digest is enabled
+        $digest_enabled = get_option('page_notes_activity_digest_enabled', '0');
+        if ($digest_enabled !== '1') {
+            return;
+        }
+
+        // Get the Notes Manager
+        $manager_id = intval(get_option('page_notes_manager_user_id', 0));
+        if ($manager_id <= 0) {
+            return; // No manager configured
+        }
+
+        $manager = get_user_by('id', $manager_id);
+        if (!$manager || empty($manager->user_email)) {
+            return; // Manager not found or has no email
+        }
+
+        global $wpdb;
+        $activity_table = $wpdb->prefix . 'page_notes_activity';
+        $notes_table = $wpdb->prefix . 'page_notes';
+
+        // Get activity from last 24 hours
+        $yesterday = date('Y-m-d H:i:s', strtotime('-24 hours'));
+
+        $activities = $wpdb->get_results($wpdb->prepare(
+            "SELECT a.*, n.page_url, n.page_id, u.ID as user_id
+            FROM $activity_table a
+            LEFT JOIN $notes_table n ON a.note_id = n.id
+            LEFT JOIN {$wpdb->users} u ON a.user_id = u.ID
+            WHERE a.created_at >= %s
+            ORDER BY a.created_at DESC",
+            $yesterday
+        ));
+
+        if (empty($activities)) {
+            return; // No activity in last 24 hours
+        }
+
+        // Send the digest email
+        $this->send_activity_digest_email($manager->user_email, $this->get_user_display_name($manager_id), $activities);
     }
 
     /**
@@ -1952,6 +2760,260 @@ class PageNotes {
             <div class="footer">
                 <p>This is an automated reminder from <a href="<?php echo esc_url($site_url); ?>"><?php echo esc_html($site_name); ?></a></p>
                 <p>You can change your reminder preferences in your <a href="<?php echo esc_url(admin_url('profile.php')); ?>">profile settings</a>.</p>
+            </div>
+        </body>
+        </html>
+        <?php
+        return ob_get_clean();
+    }
+
+    /**
+     * Send activity digest email to Notes Manager
+     */
+    private function send_activity_digest_email($to_email, $to_name, $activities) {
+        $site_name = get_bloginfo('name');
+
+        // Count activities by type
+        $created_count = 0;
+        $edited_count = 0;
+        $deleted_count = 0;
+
+        foreach ($activities as $activity) {
+            switch ($activity->action) {
+                case 'created':
+                    $created_count++;
+                    break;
+                case 'edited':
+                    $edited_count++;
+                    break;
+                case 'deleted':
+                    $deleted_count++;
+                    break;
+            }
+        }
+
+        $subject = sprintf('Daily Activity Digest for %s - %d actions', $site_name, count($activities));
+
+        $message = $this->build_activity_digest_template($to_name, $activities, $created_count, $edited_count, $deleted_count);
+
+        $headers = array(
+            'Content-Type: text/html; charset=UTF-8',
+            'From: ' . get_bloginfo('name') . ' <' . get_option('admin_email') . '>'
+        );
+
+        return wp_mail($to_email, $subject, $message, $headers);
+    }
+
+    /**
+     * Build HTML email template for activity digest
+     */
+    private function build_activity_digest_template($to_name, $activities, $created_count, $edited_count, $deleted_count) {
+        $site_name = get_bloginfo('name');
+        $site_url = get_site_url();
+        $total_count = count($activities);
+
+        ob_start();
+        ?>
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <style>
+                body {
+                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+                    line-height: 1.6;
+                    color: #333;
+                    max-width: 600px;
+                    margin: 0 auto;
+                    padding: 20px;
+                }
+                .header {
+                    background: #007cba;
+                    color: white;
+                    padding: 20px;
+                    border-radius: 5px 5px 0 0;
+                }
+                .header h1 {
+                    margin: 0;
+                    font-size: 24px;
+                }
+                .content {
+                    background: #f0f6fc;
+                    padding: 20px;
+                    border: 1px solid #c3dafe;
+                    border-top: none;
+                }
+                .summary {
+                    background: white;
+                    padding: 15px;
+                    border-radius: 5px;
+                    margin-bottom: 20px;
+                    display: flex;
+                    justify-content: space-around;
+                    text-align: center;
+                }
+                .summary-item {
+                    flex: 1;
+                }
+                .summary-number {
+                    font-size: 32px;
+                    font-weight: bold;
+                    color: #007cba;
+                }
+                .summary-label {
+                    font-size: 12px;
+                    color: #666;
+                    text-transform: uppercase;
+                }
+                .activity-list {
+                    background: white;
+                    border-radius: 5px;
+                    overflow: hidden;
+                }
+                .activity-item {
+                    padding: 15px;
+                    border-bottom: 1px solid #e0e0e0;
+                }
+                .activity-item:last-child {
+                    border-bottom: none;
+                }
+                .activity-header {
+                    display: flex;
+                    align-items: center;
+                    margin-bottom: 8px;
+                }
+                .activity-icon {
+                    width: 30px;
+                    height: 30px;
+                    border-radius: 50%;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    margin-right: 10px;
+                    font-size: 16px;
+                }
+                .activity-icon.created {
+                    background: #d4edda;
+                    color: #155724;
+                }
+                .activity-icon.edited {
+                    background: #fff3cd;
+                    color: #856404;
+                }
+                .activity-icon.deleted {
+                    background: #f8d7da;
+                    color: #721c24;
+                }
+                .activity-user {
+                    font-weight: 600;
+                    color: #333;
+                }
+                .activity-action {
+                    color: #666;
+                    margin-left: 5px;
+                }
+                .activity-time {
+                    font-size: 11px;
+                    color: #999;
+                    margin-left: auto;
+                }
+                .activity-content {
+                    font-size: 13px;
+                    color: #555;
+                    margin-left: 40px;
+                    padding: 8px;
+                    background: #f9f9f9;
+                    border-left: 2px solid #ddd;
+                    border-radius: 3px;
+                }
+                .footer {
+                    background: #f0f6fc;
+                    padding: 15px 20px;
+                    border: 1px solid #c3dafe;
+                    border-top: none;
+                    border-radius: 0 0 5px 5px;
+                    text-align: center;
+                    font-size: 12px;
+                    color: #666;
+                }
+                .footer a {
+                    color: #007cba;
+                    text-decoration: none;
+                }
+            </style>
+        </head>
+        <body>
+            <div class="header">
+                <h1>📊 Daily Activity Digest</h1>
+            </div>
+
+            <div class="content">
+                <p>Hi <?php echo esc_html($to_name); ?>,</p>
+                <p>Here's your daily summary of Page Notes activity for the last 24 hours:</p>
+
+                <div class="summary">
+                    <div class="summary-item">
+                        <div class="summary-number"><?php echo $created_count; ?></div>
+                        <div class="summary-label">Created</div>
+                    </div>
+                    <div class="summary-item">
+                        <div class="summary-number"><?php echo $edited_count; ?></div>
+                        <div class="summary-label">Edited</div>
+                    </div>
+                    <div class="summary-item">
+                        <div class="summary-number"><?php echo $deleted_count; ?></div>
+                        <div class="summary-label">Deleted</div>
+                    </div>
+                </div>
+
+                <div class="activity-list">
+                    <?php foreach ($activities as $activity) : ?>
+                        <?php
+                        $user_name = $this->get_user_display_name($activity->user_id);
+                        $time_ago = human_time_diff(strtotime($activity->created_at), current_time('timestamp')) . ' ago';
+
+                        $icon = '•';
+                        $action_text = $activity->action;
+                        if ($activity->action === 'created') {
+                            $icon = '✓';
+                            $action_text = 'created a note';
+                        } elseif ($activity->action === 'edited') {
+                            $icon = '✎';
+                            $action_text = 'edited a note';
+                        } elseif ($activity->action === 'deleted') {
+                            $icon = '✗';
+                            $action_text = 'deleted a note';
+                        }
+
+                        $content_to_show = $activity->new_content ?: $activity->old_content;
+                        $content_to_show = mb_substr(strip_tags($content_to_show), 0, 100);
+                        if (mb_strlen($content_to_show) > 100) {
+                            $content_to_show .= '...';
+                        }
+                        ?>
+                        <div class="activity-item">
+                            <div class="activity-header">
+                                <div class="activity-icon <?php echo esc_attr($activity->action); ?>">
+                                    <?php echo $icon; ?>
+                                </div>
+                                <span class="activity-user"><?php echo esc_html($user_name); ?></span>
+                                <span class="activity-action"><?php echo esc_html($action_text); ?></span>
+                                <span class="activity-time"><?php echo esc_html($time_ago); ?></span>
+                            </div>
+                            <?php if ($content_to_show) : ?>
+                                <div class="activity-content">
+                                    <?php echo esc_html($content_to_show); ?>
+                                </div>
+                            <?php endif; ?>
+                        </div>
+                    <?php endforeach; ?>
+                </div>
+            </div>
+
+            <div class="footer">
+                <p>This is an automated daily digest from <a href="<?php echo esc_url($site_url); ?>"><?php echo esc_html($site_name); ?></a></p>
+                <p>You're receiving this because you're the Notes Manager. Disable this in <a href="<?php echo esc_url(admin_url('options-general.php?page=page-notes-settings')); ?>">Page Notes Settings</a>.</p>
             </div>
         </body>
         </html>
