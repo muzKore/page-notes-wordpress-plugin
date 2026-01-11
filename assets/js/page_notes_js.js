@@ -28,8 +28,6 @@
          * This runs when the page loads - it sets everything up
          */
         init: function() {
-            console.log('Page Notes: Initializing...');
-
             // Validate that pageNotesData exists and has required properties
             if (typeof pageNotesData === 'undefined') {
                 console.error('Page Notes: pageNotesData is not defined. Plugin may not be properly loaded.');

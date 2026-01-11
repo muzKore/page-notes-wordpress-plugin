@@ -1,13 +1,12 @@
 <?php
 /**
  * Plugin Name: Page Notes
- * Plugin URI: https://example.com
- * Description: Add collaborative notes to any element on your WordPress pages
- * Version: 1.2.0
+ * Description: Add collaborative notes to any element on your WordPress pages.
+ * Version: 1.2.1
  * Author: Murray Chapman
  * Author URI: https://muzkore.com
  * License: GPL v2 or later
- * Text Domain: page-notes
+ * License URI: https://www.gnu.org/licenses/gpl-2.0.html
  */
 
 // Exit if accessed directly
@@ -16,7 +15,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Define plugin constants
-define('PAGE_NOTES_VERSION', '1.2.0');
+define('PAGE_NOTES_VERSION', '1.2.1');
 define('PAGE_NOTES_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('PAGE_NOTES_PLUGIN_URL', plugin_dir_url(__FILE__));
 
@@ -61,6 +60,7 @@ class PageNotes {
         add_action('wp_ajax_pn_search_users', array($this, 'ajax_search_users'));
         add_action('wp_ajax_pn_send_notifications', array($this, 'ajax_send_notifications'));
         add_action('wp_ajax_pn_check_pending_notifications', array($this, 'ajax_check_pending_notifications'));
+        add_action('wp_ajax_pn_send_activity_digest', array($this, 'ajax_send_activity_digest'));
 
         // Cron job for auto-sending notifications
         add_filter('cron_schedules', array($this, 'add_cron_schedules'));
@@ -163,68 +163,21 @@ class PageNotes {
     
     /**
      * Plugin deactivation
+     * Only clears scheduled tasks - does NOT delete any data
      */
     public function deactivate() {
-        // Clear scheduled cron jobs
-        $timestamp = wp_next_scheduled('page_notes_auto_send_notifications');
-        if ($timestamp) {
-            wp_unschedule_event($timestamp, 'page_notes_auto_send_notifications');
-        }
-
-        $reminder_timestamp = wp_next_scheduled('page_notes_send_reminders');
-        if ($reminder_timestamp) {
-            wp_unschedule_event($reminder_timestamp, 'page_notes_send_reminders');
-        }
-    }
-
-    /**
-     * Plugin uninstall - clean up database
-     * This should be called from uninstall.php
-     */
-    public static function uninstall() {
-        global $wpdb;
-
-        // Drop the custom tables
-        $notes_table = $wpdb->prefix . 'page_notes';
-        $activity_table = $wpdb->prefix . 'page_notes_activity';
-        $completion_table = $wpdb->prefix . 'page_notes_completions';
-        $wpdb->query("DROP TABLE IF EXISTS $notes_table");
-        $wpdb->query("DROP TABLE IF EXISTS $activity_table");
-        $wpdb->query("DROP TABLE IF EXISTS $completion_table");
-
-        // Delete all plugin options
-        delete_option('page_notes_version');
-        delete_option('page_notes_db_version');
-        delete_option('page_notes_allowed_roles');
-        delete_option('page_notes_manager_user_id');
-        delete_option('page_notes_instant_email');
-        delete_option('page_notes_auto_send_interval');
-        delete_option('page_notes_reminders_enabled');
-        delete_option('page_notes_reminder_time');
-        delete_option('page_notes_character_limit');
-        delete_option('page_notes_activity_digest_enabled');
-        delete_option('page_notes_completion_notification');
-        delete_option('page_notes_cron_interval');
-        delete_option('page_notes_reminder_time_stored');
-
-        // Delete all user meta for all users
-        $wpdb->query("DELETE FROM {$wpdb->usermeta} WHERE meta_key = 'page_notes_enabled'");
-        $wpdb->query("DELETE FROM {$wpdb->usermeta} WHERE meta_key = 'page_notes_individual_access'");
-        $wpdb->query("DELETE FROM {$wpdb->usermeta} WHERE meta_key = 'page_notes_reminders_enabled'");
-        $wpdb->query("DELETE FROM {$wpdb->usermeta} WHERE meta_key = 'page_notes_reminder_interval'");
-        $wpdb->query("DELETE FROM {$wpdb->usermeta} WHERE meta_key = 'page_notes_last_reminder_sent'");
-
-        // Clear all scheduled cron events
+        // Clear all scheduled cron jobs
         wp_clear_scheduled_hook('page_notes_auto_send_notifications');
         wp_clear_scheduled_hook('page_notes_send_reminders');
         wp_clear_scheduled_hook('page_notes_send_activity_digest');
     }
+
     
     /**
      * Initialize plugin
      */
     public function init() {
-        // Future: Add any initialization code here
+        // Future: Add any initialisation code here
     }
     
     /**
@@ -302,10 +255,16 @@ class PageNotes {
     public function ajax_get_notes() {
         check_ajax_referer('page_notes_nonce', 'nonce');
 
+        // Verify user has permission to view notes
+        if (!current_user_can('edit_posts') || !$this->is_page_notes_enabled_for_user()) {
+            wp_send_json_error('Insufficient permissions');
+            return;
+        }
+
         global $wpdb;
         $table_name = $wpdb->prefix . 'page_notes';
         $page_id = intval($_POST['page_id']);
-        $page_url = isset($_POST['page_url']) ? sanitize_text_field($_POST['page_url']) : '';
+        $page_url = isset($_POST['page_url']) ? sanitize_text_field(wp_unslash($_POST['page_url'])) : '';
 
         // Get current user ID for visibility filtering
         $current_user_id = get_current_user_id();
@@ -400,6 +359,12 @@ class PageNotes {
     public function ajax_save_note() {
         check_ajax_referer('page_notes_nonce', 'nonce');
 
+        // Verify user has permission to create notes
+        if (!current_user_can('edit_posts') || !$this->is_page_notes_enabled_for_user()) {
+            wp_send_json_error('Insufficient permissions');
+            return;
+        }
+
         global $wpdb;
         $table_name = $wpdb->prefix . 'page_notes';
 
@@ -410,9 +375,9 @@ class PageNotes {
         }
 
         $page_id = intval($_POST['page_id']);
-        $content = trim(wp_kses_post($_POST['content']));
-        $element_selector = sanitize_text_field($_POST['element_selector']);
-        $page_url = isset($_POST['page_url']) ? sanitize_text_field($_POST['page_url']) : '';
+        $content = trim(wp_kses_post(wp_unslash($_POST['content'])));
+        $element_selector = sanitize_text_field(wp_unslash($_POST['element_selector']));
+        $page_url = isset($_POST['page_url']) ? sanitize_text_field(wp_unslash($_POST['page_url'])) : '';
 
         // Validate page_id is not negative (0 is valid for some pages like blog index)
         if ($page_id < 0) {
@@ -587,6 +552,12 @@ class PageNotes {
     public function ajax_update_note() {
         check_ajax_referer('page_notes_nonce', 'nonce');
 
+        // Verify user has permission to edit notes
+        if (!current_user_can('edit_posts') || !$this->is_page_notes_enabled_for_user()) {
+            wp_send_json_error('Insufficient permissions');
+            return;
+        }
+
         global $wpdb;
         $table_name = $wpdb->prefix . 'page_notes';
 
@@ -623,7 +594,7 @@ class PageNotes {
 
         // Validate and add content if provided
         if (isset($_POST['content'])) {
-            $content = trim(wp_kses_post($_POST['content']));
+            $content = trim(wp_kses_post(wp_unslash($_POST['content'])));
             if (empty($content)) {
                 wp_send_json_error('Note content cannot be empty');
                 return;
@@ -641,7 +612,7 @@ class PageNotes {
 
         // Validate and add status if provided
         if (isset($_POST['status'])) {
-            $status = sanitize_text_field($_POST['status']);
+            $status = sanitize_text_field(wp_unslash($_POST['status']));
             $allowed_statuses = array('open', 'completed');
             if (!in_array($status, $allowed_statuses, true)) {
                 wp_send_json_error('Invalid status value');
@@ -685,6 +656,12 @@ class PageNotes {
      */
     public function ajax_delete_note() {
         check_ajax_referer('page_notes_nonce', 'nonce');
+
+        // Verify user has permission to delete notes
+        if (!current_user_can('edit_posts') || !$this->is_page_notes_enabled_for_user()) {
+            wp_send_json_error('Insufficient permissions');
+            return;
+        }
 
         global $wpdb;
         $table_name = $wpdb->prefix . 'page_notes';
@@ -735,6 +712,12 @@ class PageNotes {
      */
     public function ajax_get_pages_with_notes() {
         check_ajax_referer('page_notes_nonce', 'nonce');
+
+        // Verify user has permission to view notes
+        if (!current_user_can('edit_posts') || !$this->is_page_notes_enabled_for_user()) {
+            wp_send_json_error('Insufficient permissions');
+            return;
+        }
 
         global $wpdb;
         $table_name = $wpdb->prefix . 'page_notes';
@@ -906,7 +889,7 @@ class PageNotes {
                             Grant this user access to Page Notes regardless of their role
                         </label>
                         <p class="description">
-                            Useful for giving specific users (e.g., Subscribers) access to Page Notes without changing their role or global role settings.
+                            Useful for giving specific users access to Page Notes without changing their role or global role settings. Note: Users must have the 'edit_posts' capability.
                             <?php if (!$has_role_access && $individual_access !== '1'): ?>
                                 <strong>Currently, this user does not have access to Page Notes.</strong>
                             <?php endif; ?>
@@ -922,20 +905,20 @@ class PageNotes {
             return;
         }
 
-        // Get current settings (default to enabled)
+        // Get current settings (default to disabled - opt-in required)
         $enabled = get_user_meta($user->ID, 'page_notes_enabled', true);
         if ($enabled === '') {
-            $enabled = '1'; // Default to enabled
+            $enabled = '0'; // Default to disabled
         }
 
         $reminders_enabled = get_user_meta($user->ID, 'page_notes_reminders_enabled', true);
         if ($reminders_enabled === '') {
-            $reminders_enabled = '1'; // Default to enabled
+            $reminders_enabled = '0'; // Default to disabled
         }
 
         $reminder_interval = get_user_meta($user->ID, 'page_notes_reminder_interval', true);
         if (empty($reminder_interval)) {
-            $reminder_interval = '1'; // Default to daily
+            $reminder_interval = '7'; // Default to weekly
         }
         ?>
         <h3>Page Notes Settings</h3>
@@ -1042,6 +1025,7 @@ class PageNotes {
         register_setting('page_notes_settings', 'page_notes_character_limit');
         register_setting('page_notes_settings', 'page_notes_activity_digest_enabled');
         register_setting('page_notes_settings', 'page_notes_completion_notification');
+        register_setting('page_notes_settings', 'page_notes_delete_on_uninstall');
     }
 
     /**
@@ -1191,7 +1175,7 @@ class PageNotes {
                             <th scope="row">Task Reminders</th>
                             <td>
                                 <?php
-                                $reminders_enabled = get_option('page_notes_reminders_enabled', '1');
+                                $reminders_enabled = get_option('page_notes_reminders_enabled', '0');
                                 ?>
                                 <label for="page_notes_reminders_enabled">
                                     <input type="checkbox" name="page_notes_reminders_enabled" id="page_notes_reminders_enabled" value="1" <?php checked($reminders_enabled, '1'); ?> />
@@ -1242,6 +1226,10 @@ class PageNotes {
                                 <p class="description">
                                     When enabled, the Notes Manager will receive a daily email summary of all notes created, edited, and deleted in the last 24 hours. Sent at the same time as task reminders.
                                 </p>
+                                <button type="button" id="send-activity-digest-btn" class="button" style="margin-top: 10px;">
+                                    Send Activity Digest Now
+                                </button>
+                                <span id="activity-digest-result" style="margin-left: 10px;"></span>
                             </td>
                         </tr>
                         <tr>
@@ -1284,6 +1272,29 @@ class PageNotes {
                     </table>
                 </div>
 
+                <div class="card" style="margin-top: 20px;">
+                    <h2>Data Management</h2>
+                    <p>Control what happens to your plugin data when the plugin is uninstalled.</p>
+
+                    <table class="form-table">
+                        <tr>
+                            <th scope="row">Uninstall Behaviour</th>
+                            <td>
+                                <?php
+                                $delete_on_uninstall = get_option('page_notes_delete_on_uninstall', '0');
+                                ?>
+                                <label for="page_notes_delete_on_uninstall">
+                                    <input type="checkbox" name="page_notes_delete_on_uninstall" id="page_notes_delete_on_uninstall" value="1" <?php checked($delete_on_uninstall, '1'); ?> />
+                                    Remove all plugin settings and data when uninstalled
+                                </label>
+                                <p class="description">
+                                    When enabled, uninstalling Page Notes will permanently delete all notes, activity logs, settings, and user preferences from your database. This cannot be undone. Leave unchecked (default) to preserve your data if you reinstall the plugin later.
+                                </p>
+                            </td>
+                        </tr>
+                    </table>
+                </div>
+
                 <?php submit_button('Save Settings'); ?>
             </form>
 
@@ -1301,6 +1312,61 @@ class PageNotes {
                 </table>
             </div>
         </div>
+
+        <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const sendDigestBtn = document.getElementById('send-activity-digest-btn');
+            const digestResult = document.getElementById('activity-digest-result');
+
+            if (sendDigestBtn) {
+                sendDigestBtn.addEventListener('click', function(e) {
+                    e.preventDefault();
+
+                    // Disable button and show loading
+                    sendDigestBtn.disabled = true;
+                    sendDigestBtn.textContent = 'Sending...';
+                    digestResult.textContent = '';
+                    digestResult.className = '';
+
+                    // Send AJAX request
+                    fetch(ajaxurl, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/x-www-form-urlencoded',
+                        },
+                        body: new URLSearchParams({
+                            action: 'pn_send_activity_digest',
+                            nonce: '<?php echo wp_create_nonce('page_notes_nonce'); ?>'
+                        })
+                    })
+                    .then(response => response.json())
+                    .then(data => {
+                        sendDigestBtn.disabled = false;
+                        sendDigestBtn.textContent = 'Send Activity Digest Now';
+
+                        if (data.success) {
+                            digestResult.textContent = '✓ ' + data.data.message;
+                            digestResult.style.color = '#46b450';
+                        } else {
+                            digestResult.textContent = '✗ ' + (data.data || 'Failed to send digest');
+                            digestResult.style.color = '#dc3232';
+                        }
+
+                        // Clear message after 5 seconds
+                        setTimeout(function() {
+                            digestResult.textContent = '';
+                        }, 5000);
+                    })
+                    .catch(error => {
+                        sendDigestBtn.disabled = false;
+                        sendDigestBtn.textContent = 'Send Activity Digest Now';
+                        digestResult.textContent = '✗ Error: ' + error.message;
+                        digestResult.style.color = '#dc3232';
+                    });
+                });
+            }
+        });
+        </script>
         <?php
     }
 
@@ -1367,6 +1433,230 @@ class PageNotes {
     }
 
     /**
+     * Email Template Helper: Get consistent header HTML
+     */
+    private function get_email_header($email_title, $icon = '📝') {
+        $site_name = get_bloginfo('name');
+        $site_url = get_site_url();
+
+        ob_start();
+        ?>
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <style>
+                body {
+                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+                    line-height: 1.6;
+                    color: #333;
+                    max-width: 600px;
+                    margin: 0 auto;
+                    padding: 20px;
+                    background-color: #f5f5f5;
+                }
+                .email-container {
+                    background: white;
+                    border-radius: 8px;
+                    overflow: hidden;
+                    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+                }
+                .brand-header {
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    color: white;
+                    padding: 24px 30px;
+                    text-align: center;
+                }
+                .brand-logo {
+                    font-size: 32px;
+                    margin-bottom: 8px;
+                }
+                .brand-title {
+                    margin: 0;
+                    font-size: 14px;
+                    font-weight: 600;
+                    letter-spacing: 0.5px;
+                    text-transform: uppercase;
+                    opacity: 0.9;
+                }
+                .email-title-section {
+                    background: #f8f9fa;
+                    padding: 20px 30px;
+                    border-bottom: 2px solid #e9ecef;
+                }
+                .email-title {
+                    margin: 0;
+                    font-size: 20px;
+                    font-weight: 600;
+                    color: #2c3e50;
+                    display: flex;
+                    align-items: center;
+                    gap: 10px;
+                }
+                .email-icon {
+                    font-size: 24px;
+                }
+                .content {
+                    padding: 30px;
+                }
+                .greeting {
+                    font-size: 16px;
+                    margin-bottom: 20px;
+                    color: #495057;
+                }
+                .divider {
+                    border-top: 2px solid #e9ecef;
+                    margin: 25px 0;
+                }
+                .page-section {
+                    margin-bottom: 25px;
+                }
+                .page-title {
+                    font-size: 18px;
+                    font-weight: 600;
+                    color: #495057;
+                    margin-bottom: 10px;
+                }
+                .page-link {
+                    display: inline-block;
+                    color: #667eea;
+                    text-decoration: none;
+                    font-size: 14px;
+                    margin-bottom: 15px;
+                    font-weight: 500;
+                }
+                .page-link:hover {
+                    text-decoration: underline;
+                }
+                .note-box {
+                    background: #f8f9fa;
+                    padding: 16px;
+                    margin-bottom: 15px;
+                    border-left: 4px solid #667eea;
+                    border-radius: 4px;
+                }
+                .note-label {
+                    font-size: 12px;
+                    font-weight: 600;
+                    color: #6c757d;
+                    text-transform: uppercase;
+                    letter-spacing: 0.5px;
+                    margin-bottom: 8px;
+                }
+                .note-author {
+                    font-size: 14px;
+                    font-weight: 500;
+                    color: #495057;
+                    margin-bottom: 8px;
+                }
+                .note-content {
+                    font-size: 15px;
+                    color: #212529;
+                    line-height: 1.6;
+                    padding: 12px 0;
+                }
+                .note-meta {
+                    font-size: 13px;
+                    color: #6c757d;
+                    margin-top: 8px;
+                }
+                .button {
+                    display: inline-block;
+                    padding: 12px 24px;
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    color: white !important;
+                    text-decoration: none;
+                    border-radius: 6px;
+                    font-weight: 500;
+                    margin: 10px 0;
+                    transition: transform 0.2s;
+                }
+                .button:hover {
+                    transform: translateY(-2px);
+                }
+                .quote-box {
+                    background: white;
+                    border-left: 3px solid #dee2e6;
+                    padding: 12px 16px;
+                    margin: 12px 0;
+                    font-style: italic;
+                    color: #6c757d;
+                }
+                .footer {
+                    background: #f8f9fa;
+                    padding: 20px 30px;
+                    text-align: center;
+                    border-top: 2px solid #e9ecef;
+                    font-size: 13px;
+                    color: #6c757d;
+                }
+                .footer-link {
+                    color: #667eea;
+                    text-decoration: none;
+                }
+                .badge {
+                    display: inline-block;
+                    padding: 4px 10px;
+                    background: #667eea;
+                    color: white;
+                    border-radius: 12px;
+                    font-size: 12px;
+                    font-weight: 600;
+                    margin: 4px 0;
+                }
+                .badge-success {
+                    background: #28a745;
+                }
+                .badge-warning {
+                    background: #ffc107;
+                    color: #333;
+                }
+            </style>
+        </head>
+        <body>
+            <div class="email-container">
+                <div class="brand-header">
+                    <div class="brand-logo">📝</div>
+                    <h2 class="brand-title">Page Notes</h2>
+                </div>
+                <div class="email-title-section">
+                    <h1 class="email-title">
+                        <span class="email-icon"><?php echo $icon; ?></span>
+                        <span><?php echo esc_html($email_title); ?></span>
+                    </h1>
+                </div>
+                <div class="content">
+        <?php
+        return ob_get_clean();
+    }
+
+    /**
+     * Email Template Helper: Get consistent footer HTML
+     */
+    private function get_email_footer() {
+        $site_name = get_bloginfo('name');
+        $site_url = get_site_url();
+
+        ob_start();
+        ?>
+                </div>
+                <div class="footer">
+                    <p style="margin: 0 0 10px 0;">
+                        This email was sent by <strong><?php echo esc_html($site_name); ?></strong> Page Notes
+                    </p>
+                    <p style="margin: 0;">
+                        <a href="<?php echo esc_url($site_url); ?>" class="footer-link"><?php echo esc_html($site_name); ?></a>
+                    </p>
+                </div>
+            </div>
+        </body>
+        </html>
+        <?php
+        return ob_get_clean();
+    }
+
+    /**
      * Send email notification when a task is completed
      */
     private function send_completion_email($note_id, $note_creator_id, $completed_by_id) {
@@ -1392,28 +1682,35 @@ class PageNotes {
         }
 
         $completer_name = $this->get_user_display_name($completed_by_id);
+        $creator_name = $this->get_user_display_name($note_creator_id);
         $page_title = get_the_title($note->page_id) ?: 'Unknown Page';
         $page_url = $note->page_url;
 
-        // Build email
-        $subject = sprintf('[Page Notes] Task completed on "%s"', $page_title);
+        // Strip @mentions from displayed content
+        $note_content = preg_replace('/@[\w-]+/', '', $note->content);
+        $note_content = trim($note_content);
 
-        $message = sprintf(
-            "Hi %s,\n\n" .
-            "%s has marked your note as completed.\n\n" .
-            "Note content:\n%s\n\n" .
-            "Page: %s\n" .
-            "View the page: %s\n\n" .
-            "---\n" .
-            "This is an automated notification from Page Notes.",
-            $creator->display_name,
-            $completer_name,
-            $note->content,
-            $page_title,
-            $page_url
-        );
+        // Build HTML email
+        $subject = 'Task Completed: ' . $page_title;
 
-        wp_mail($creator->user_email, $subject, $message);
+        $message = $this->get_email_header('Task Completed', '✅');
+        $message .= '<div class="greeting">Hi ' . esc_html($creator_name) . ',</div>';
+        $message .= '<p><strong>' . esc_html($completer_name) . '</strong> has marked your note as completed.</p>';
+
+        $message .= '<div class="note-box">';
+        $message .= '<div class="note-label">Your Note</div>';
+        $message .= '<div class="note-content">' . nl2br(esc_html($note_content)) . '</div>';
+        $message .= '</div>';
+
+        $message .= '<div class="page-section">';
+        $message .= '<div class="page-title">📄 ' . esc_html($page_title) . '</div>';
+        $message .= '<a href="' . esc_url($page_url) . '" class="button">View Page</a>';
+        $message .= '</div>';
+
+        $message .= $this->get_email_footer();
+
+        $headers = array('Content-Type: text/html; charset=UTF-8');
+        wp_mail($creator->user_email, $subject, $message, $headers);
     }
 
     /**
@@ -1479,7 +1776,13 @@ class PageNotes {
     public function ajax_search_users() {
         check_ajax_referer('page_notes_nonce', 'nonce');
 
-        $search = isset($_POST['search']) ? sanitize_text_field($_POST['search']) : '';
+        // Verify user has permission to use notes
+        if (!current_user_can('edit_posts') || !$this->is_page_notes_enabled_for_user()) {
+            wp_send_json_error('Insufficient permissions');
+            return;
+        }
+
+        $search = isset($_POST['search']) ? sanitize_text_field(wp_unslash($_POST['search'])) : '';
 
         if (strlen($search) < 1) {
             wp_send_json_success(array());
@@ -1546,6 +1849,12 @@ class PageNotes {
     public function ajax_send_notifications() {
         check_ajax_referer('page_notes_nonce', 'nonce');
 
+        // Verify user has permission (admins and Notes Manager only)
+        if (!current_user_can('manage_options') && get_current_user_id() != get_option('page_notes_manager_user_id', '')) {
+            wp_send_json_error('Insufficient permissions');
+            return;
+        }
+
         $result = $this->send_pending_notifications();
 
         if ($result['recipients'] > 0) {
@@ -1574,6 +1883,12 @@ class PageNotes {
      */
     public function ajax_check_pending_notifications() {
         check_ajax_referer('page_notes_nonce', 'nonce');
+
+        // Verify user has permission to view pending count
+        if (!current_user_can('edit_posts') || !$this->is_page_notes_enabled_for_user()) {
+            wp_send_json_error('Insufficient permissions');
+            return;
+        }
 
         global $wpdb;
         $table_name = $wpdb->prefix . 'page_notes';
@@ -1609,6 +1924,91 @@ class PageNotes {
             'has_pending' => $total_count > 0,
             'count' => $total_count
         ));
+    }
+
+    /**
+     * AJAX: Manually send activity digest to Notes Manager
+     */
+    public function ajax_send_activity_digest() {
+        check_ajax_referer('page_notes_nonce', 'nonce');
+
+        // Verify user has permission (admins only)
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Insufficient permissions');
+            return;
+        }
+
+        // Get the Notes Manager
+        $manager_id = intval(get_option('page_notes_manager_user_id', 0));
+        if ($manager_id <= 0) {
+            wp_send_json_error('No Notes Manager configured. Please select a Notes Manager in settings.');
+            return;
+        }
+
+        $manager = get_user_by('id', $manager_id);
+        if (!$manager || empty($manager->user_email)) {
+            wp_send_json_error('Notes Manager not found or has no email address.');
+            return;
+        }
+
+        global $wpdb;
+        $activity_table = $wpdb->prefix . 'page_notes_activity';
+        $notes_table = $wpdb->prefix . 'page_notes';
+
+        // Get activity from last 24 hours
+        $yesterday = date('Y-m-d H:i:s', strtotime('-24 hours'));
+
+        $activities = $wpdb->get_results($wpdb->prepare(
+            "SELECT a.*, n.page_url, n.page_id, u.ID as user_id
+            FROM $activity_table a
+            LEFT JOIN $notes_table n ON a.note_id = n.id
+            LEFT JOIN {$wpdb->users} u ON a.user_id = u.ID
+            WHERE a.created_at >= %s
+            ORDER BY a.created_at DESC",
+            $yesterday
+        ));
+
+        if (empty($activities)) {
+            wp_send_json_success(array(
+                'message' => 'No activity in the last 24 hours to report.',
+                'sent' => false
+            ));
+            return;
+        }
+
+        // Count activity types
+        $created_count = 0;
+        $edited_count = 0;
+        $deleted_count = 0;
+
+        foreach ($activities as $activity) {
+            if ($activity->action === 'created') {
+                $created_count++;
+            } elseif ($activity->action === 'edited') {
+                $edited_count++;
+            } elseif ($activity->action === 'deleted') {
+                $deleted_count++;
+            }
+        }
+
+        // Send the digest email
+        $result = $this->send_activity_digest_email($manager->user_email, $manager->display_name, $activities, $created_count, $edited_count, $deleted_count);
+
+        if ($result) {
+            wp_send_json_success(array(
+                'message' => sprintf(
+                    'Activity digest sent to %s (%d activities: %d created, %d edited, %d deleted)',
+                    $manager->display_name,
+                    count($activities),
+                    $created_count,
+                    $edited_count,
+                    $deleted_count
+                ),
+                'sent' => true
+            ));
+        } else {
+            wp_send_json_error('Failed to send activity digest email. Check your WordPress email configuration.');
+        }
     }
 
     /**
@@ -1858,159 +2258,39 @@ class PageNotes {
      * Build HTML email template for reply notifications
      */
     private function build_reply_email_template($to_name, $reply_author_name, $parent_note, $reply_note, $page_title, $page_url) {
-        $site_name = get_bloginfo('name');
-        $site_url = get_site_url();
-
         // Strip @mentions from displayed content
         $parent_content = preg_replace('/@[\w-]+/', '', $parent_note->content);
         $parent_content = trim($parent_content);
         $reply_content = preg_replace('/@[\w-]+/', '', $reply_note->content);
         $reply_content = trim($reply_content);
 
-        ob_start();
-        ?>
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <style>
-                body {
-                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-                    line-height: 1.6;
-                    color: #333;
-                    max-width: 600px;
-                    margin: 0 auto;
-                    padding: 20px;
-                }
-                .header {
-                    background: #6c757d;
-                    color: white;
-                    padding: 20px;
-                    border-radius: 5px 5px 0 0;
-                }
-                .header h1 {
-                    margin: 0;
-                    font-size: 24px;
-                }
-                .content {
-                    background: #f8f9fa;
-                    padding: 20px;
-                    border: 1px solid #dee2e6;
-                    border-top: none;
-                }
-                .greeting {
-                    font-size: 16px;
-                    margin-bottom: 20px;
-                }
-                .divider {
-                    border-top: 2px solid #6c757d;
-                    margin: 20px 0;
-                }
-                .page-section {
-                    margin-bottom: 25px;
-                }
-                .page-title {
-                    font-size: 18px;
-                    font-weight: 600;
-                    color: #495057;
-                    margin-bottom: 10px;
-                }
-                .page-link {
-                    display: inline-block;
-                    color: #0073aa;
-                    text-decoration: none;
-                    font-size: 14px;
-                    margin-bottom: 15px;
-                }
-                .page-link:hover {
-                    text-decoration: underline;
-                }
-                .note-box {
-                    background: white;
-                    padding: 15px;
-                    margin-bottom: 15px;
-                    border-left: 3px solid #ffc107;
-                    border-radius: 3px;
-                }
-                .note-label {
-                    font-size: 12px;
-                    font-weight: 600;
-                    color: #6c757d;
-                    text-transform: uppercase;
-                    margin-bottom: 8px;
-                }
-                .note-content {
-                    margin: 0 0 8px 0;
-                    font-size: 14px;
-                }
-                .reply-box {
-                    background: white;
-                    padding: 15px;
-                    margin-left: 20px;
-                    border-left: 3px solid #6c757d;
-                    border-radius: 3px;
-                }
-                .reply-author {
-                    font-size: 12px;
-                    color: #666;
-                    font-weight: 600;
-                    margin-bottom: 8px;
-                }
-                .footer {
-                    background: #f8f9fa;
-                    padding: 15px 20px;
-                    border: 1px solid #dee2e6;
-                    border-top: none;
-                    border-radius: 0 0 5px 5px;
-                    text-align: center;
-                    font-size: 12px;
-                    color: #666;
-                }
-                .footer a {
-                    color: #0073aa;
-                    text-decoration: none;
-                }
-            </style>
-        </head>
-        <body>
-            <div class="header">
-                <h1>💬 Reply to Your Note</h1>
-            </div>
+        $message = $this->get_email_header('Reply to Your Note', '💬');
 
-            <div class="content">
-                <div class="greeting">
-                    Hi <?php echo esc_html($to_name); ?>,
-                </div>
+        $message .= '<div class="greeting">Hi ' . esc_html($to_name) . ',</div>';
+        $message .= '<p><strong>' . esc_html($reply_author_name) . '</strong> replied to your note on <strong>' . esc_html($page_title) . '</strong>.</p>';
 
-                <p><strong><?php echo esc_html($reply_author_name); ?></strong> replied to your note:</p>
+        $message .= '<div class="divider"></div>';
 
-                <div class="divider"></div>
+        $message .= '<div class="note-box">';
+        $message .= '<div class="note-label">Your Original Note</div>';
+        $message .= '<div class="note-content">' . nl2br(esc_html($parent_content)) . '</div>';
+        $message .= '</div>';
 
-                <div class="page-section">
-                    <div class="page-title"><?php echo esc_html($page_title); ?></div>
-                    <a href="<?php echo esc_url($page_url); ?>" class="page-link">View Page &rarr;</a>
+        $message .= '<div class="quote-box">';
+        $message .= '<div class="note-author">' . esc_html($reply_author_name) . ' replied:</div>';
+        $message .= '<div class="note-content">' . nl2br(esc_html($reply_content)) . '</div>';
+        $message .= '</div>';
 
-                    <div class="note-box">
-                        <div class="note-label">Your Original Note:</div>
-                        <p class="note-content"><?php echo nl2br(esc_html($parent_content)); ?></p>
-                    </div>
+        $message .= '<div class="divider"></div>';
 
-                    <div class="reply-box">
-                        <div class="reply-author"><?php echo esc_html($reply_author_name); ?> replied:</div>
-                        <p class="note-content"><?php echo nl2br(esc_html($reply_content)); ?></p>
-                    </div>
-                </div>
-            </div>
+        $message .= '<div class="page-section">';
+        $message .= '<div class="page-title">📄 ' . esc_html($page_title) . '</div>';
+        $message .= '<a href="' . esc_url($page_url) . '" class="button">View Conversation</a>';
+        $message .= '</div>';
 
-            <div class="footer">
-                <p>This is an automated notification from <a href="<?php echo esc_url($site_url); ?>"><?php echo esc_html($site_name); ?></a></p>
-                <p>View the conversation in the Page Notes panel when you visit the page.</p>
-            </div>
-        </body>
-        </html>
-        <?php
-        return ob_get_clean();
+        $message .= $this->get_email_footer();
+
+        return $message;
     }
 
     /**
@@ -2097,143 +2377,40 @@ class PageNotes {
      * Build HTML email template
      */
     private function build_email_template($to_name, $notes_by_page, $total_notes, $page_count) {
-        $site_name = get_bloginfo('name');
-        $site_url = get_site_url();
+        $message = $this->get_email_header('You Have New Notes', '🔔');
 
-        ob_start();
-        ?>
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <style>
-                body {
-                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-                    line-height: 1.6;
-                    color: #333;
-                    max-width: 600px;
-                    margin: 0 auto;
-                    padding: 20px;
-                }
-                .header {
-                    background: #0073aa;
-                    color: white;
-                    padding: 20px;
-                    border-radius: 5px 5px 0 0;
-                }
-                .header h1 {
-                    margin: 0;
-                    font-size: 24px;
-                }
-                .content {
-                    background: #f9f9f9;
-                    padding: 20px;
-                    border: 1px solid #ddd;
-                    border-top: none;
-                }
-                .greeting {
-                    font-size: 16px;
-                    margin-bottom: 20px;
-                }
-                .divider {
-                    border-top: 2px solid #0073aa;
-                    margin: 20px 0;
-                }
-                .page-section {
-                    margin-bottom: 25px;
-                }
-                .page-title {
-                    font-size: 18px;
-                    font-weight: 600;
-                    color: #0073aa;
-                    margin-bottom: 10px;
-                }
-                .page-link {
-                    display: inline-block;
-                    color: #0073aa;
-                    text-decoration: none;
-                    font-size: 14px;
-                    margin-bottom: 10px;
-                }
-                .page-link:hover {
-                    text-decoration: underline;
-                }
-                .note-item {
-                    background: white;
-                    padding: 12px;
-                    margin-bottom: 10px;
-                    border-left: 3px solid #0073aa;
-                    border-radius: 3px;
-                }
-                .note-content {
-                    margin: 0 0 8px 0;
-                    font-size: 14px;
-                }
-                .note-author {
-                    font-size: 12px;
-                    color: #666;
-                    font-style: italic;
-                }
-                .footer {
-                    background: #f9f9f9;
-                    padding: 15px 20px;
-                    border: 1px solid #ddd;
-                    border-top: none;
-                    border-radius: 0 0 5px 5px;
-                    text-align: center;
-                    font-size: 12px;
-                    color: #666;
-                }
-                .footer a {
-                    color: #0073aa;
-                    text-decoration: none;
-                }
-            </style>
-        </head>
-        <body>
-            <div class="header">
-                <h1>Page Notes</h1>
-            </div>
+        $message .= '<div class="greeting">Hi ' . esc_html($to_name) . ',</div>';
+        $message .= '<p>You\'ve been mentioned in <strong>' . esc_html($total_notes) . '</strong> note' . ($total_notes === 1 ? '' : 's') . ' across <strong>' . esc_html($page_count) . '</strong> page' . ($page_count === 1 ? '' : 's') . ':</p>';
 
-            <div class="content">
-                <div class="greeting">
-                    Hi <?php echo esc_html($to_name); ?>,
-                </div>
+        $message .= '<div class="divider"></div>';
 
-                <p>You've been mentioned in <?php echo esc_html($total_notes); ?> note<?php echo $total_notes === 1 ? '' : 's'; ?> across <?php echo esc_html($page_count); ?> page<?php echo $page_count === 1 ? '' : 's'; ?>:</p>
+        foreach ($notes_by_page as $page_data) {
+            $message .= '<div class="page-section">';
+            $message .= '<div class="page-title">📄 ' . esc_html($page_data['page_title']) . '</div>';
 
-                <div class="divider"></div>
+            foreach ($page_data['notes'] as $note) {
+                $creator_name = $this->get_user_display_name($note->creator_id);
+                // Strip @mentions from displayed content
+                $display_content = preg_replace('/@[\w-]+/', '', $note->content);
+                $display_content = trim($display_content);
 
-                <?php foreach ($notes_by_page as $page_data) : ?>
-                    <div class="page-section">
-                        <div class="page-title"><?php echo esc_html($page_data['page_title']); ?></div>
-                        <a href="<?php echo esc_url($page_data['page_url']); ?>" class="page-link">View Page &rarr;</a>
+                $message .= '<div class="note-box">';
+                $message .= '<div class="note-author">' . esc_html($creator_name) . ' mentioned you:</div>';
+                $message .= '<div class="note-content">' . nl2br(esc_html($display_content)) . '</div>';
+                $message .= '</div>';
+            }
 
-                        <?php foreach ($page_data['notes'] as $note) : ?>
-                            <?php
-                            $creator_name = $this->get_user_display_name($note->creator_id);
-                            // Strip @mentions from displayed content
-                            $display_content = preg_replace('/@[\w-]+/', '', $note->content);
-                            $display_content = trim($display_content);
-                            ?>
-                            <div class="note-item">
-                                <p class="note-content"><?php echo nl2br(esc_html($display_content)); ?></p>
-                                <div class="note-author">— <?php echo esc_html($creator_name); ?></div>
-                            </div>
-                        <?php endforeach; ?>
-                    </div>
-                <?php endforeach; ?>
-            </div>
+            $message .= '<a href="' . esc_url($page_data['page_url']) . '" class="button">View Page</a>';
+            $message .= '</div>';
 
-            <div class="footer">
-                <p>This is an automated notification from <a href="<?php echo esc_url($site_url); ?>"><?php echo esc_html($site_name); ?></a></p>
-                <p>View all your notes in the Page Notes panel when you visit the site.</p>
-            </div>
-        </body>
-        </html>
-        <?php
-        return ob_get_clean();
+            if ($page_data !== end($notes_by_page)) {
+                $message .= '<div class="divider"></div>';
+            }
+        }
+
+        $message .= $this->get_email_footer();
+
+        return $message;
     }
 
     /**
@@ -2283,7 +2460,7 @@ class PageNotes {
         }
 
         // Handle reminder cron scheduling
-        $reminders_enabled = get_option('page_notes_reminders_enabled', '1');
+        $reminders_enabled = get_option('page_notes_reminders_enabled', '0');
         $reminder_time = get_option('page_notes_reminder_time', '09:00');
 
         // Check if already scheduled
@@ -2413,7 +2590,7 @@ class PageNotes {
         global $wpdb;
 
         // Check if reminders are enabled globally
-        $reminders_enabled = get_option('page_notes_reminders_enabled', '1');
+        $reminders_enabled = get_option('page_notes_reminders_enabled', '0');
         if ($reminders_enabled !== '1') {
             return;
         }
@@ -2607,164 +2784,59 @@ class PageNotes {
      * Build HTML email template for reminders
      */
     private function build_reminder_email_template($to_name, $notes_by_page, $total_notes, $page_count) {
-        $site_name = get_bloginfo('name');
-        $site_url = get_site_url();
+        $message = $this->get_email_header('Task Reminder', '⏰');
 
-        ob_start();
-        ?>
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <style>
-                body {
-                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-                    line-height: 1.6;
-                    color: #333;
-                    max-width: 600px;
-                    margin: 0 auto;
-                    padding: 20px;
-                }
-                .header {
-                    background: #ff9800;
-                    color: white;
-                    padding: 20px;
-                    border-radius: 5px 5px 0 0;
-                }
-                .header h1 {
-                    margin: 0;
-                    font-size: 24px;
-                }
-                .content {
-                    background: #fff8e1;
-                    padding: 20px;
-                    border: 1px solid #ffcc80;
-                    border-top: none;
-                }
-                .greeting {
-                    font-size: 16px;
-                    margin-bottom: 20px;
-                }
-                .divider {
-                    border-top: 2px solid #ff9800;
-                    margin: 20px 0;
-                }
-                .page-section {
-                    margin-bottom: 25px;
-                }
-                .page-title {
-                    font-size: 18px;
-                    font-weight: 600;
-                    color: #e65100;
-                    margin-bottom: 10px;
-                }
-                .page-link {
-                    display: inline-block;
-                    color: #e65100;
-                    text-decoration: none;
-                    font-size: 14px;
-                    margin-bottom: 10px;
-                }
-                .page-link:hover {
-                    text-decoration: underline;
-                }
-                .note-item {
-                    background: white;
-                    padding: 12px;
-                    margin-bottom: 10px;
-                    border-left: 3px solid #ff9800;
-                    border-radius: 3px;
-                }
-                .note-content {
-                    margin: 0 0 8px 0;
-                    font-size: 14px;
-                }
-                .note-meta {
-                    font-size: 12px;
-                    color: #666;
-                }
-                .note-author {
-                    font-style: italic;
-                }
-                .note-age {
-                    color: #999;
-                    margin-left: 8px;
-                }
-                .footer {
-                    background: #fff8e1;
-                    padding: 15px 20px;
-                    border: 1px solid #ffcc80;
-                    border-top: none;
-                    border-radius: 0 0 5px 5px;
-                    text-align: center;
-                    font-size: 12px;
-                    color: #666;
-                }
-                .footer a {
-                    color: #e65100;
-                    text-decoration: none;
-                }
-            </style>
-        </head>
-        <body>
-            <div class="header">
-                <h1>📋 Task Reminder</h1>
-            </div>
+        $message .= '<div class="greeting">Hi ' . esc_html($to_name) . ',</div>';
+        $message .= '<p>This is your reminder that you have <strong>' . esc_html($total_notes) . '</strong> incomplete task' . ($total_notes === 1 ? '' : 's') . ' waiting for you across <strong>' . esc_html($page_count) . '</strong> page' . ($page_count === 1 ? '' : 's') . ':</p>';
 
-            <div class="content">
-                <div class="greeting">
-                    Hi <?php echo esc_html($to_name); ?>,
-                </div>
+        $message .= '<div class="divider"></div>';
 
-                <p>This is your reminder that you have <?php echo esc_html($total_notes); ?> incomplete task<?php echo $total_notes === 1 ? '' : 's'; ?> waiting for you across <?php echo esc_html($page_count); ?> page<?php echo $page_count === 1 ? '' : 's'; ?>:</p>
+        foreach ($notes_by_page as $page_data) {
+            $message .= '<div class="page-section">';
+            $message .= '<div class="page-title">📄 ' . esc_html($page_data['page_title']) . '</div>';
 
-                <div class="divider"></div>
+            foreach ($page_data['notes'] as $note) {
+                $creator_name = $this->get_user_display_name($note->creator_id);
+                // Strip @mentions from displayed content
+                $display_content = preg_replace('/@[\w-]+/', '', $note->content);
+                $display_content = trim($display_content);
 
-                <?php foreach ($notes_by_page as $page_data) : ?>
-                    <div class="page-section">
-                        <div class="page-title"><?php echo esc_html($page_data['page_title']); ?></div>
-                        <a href="<?php echo esc_url($page_data['page_url']); ?>" class="page-link">View Page &rarr;</a>
+                // Calculate how long ago the note was created
+                $created_timestamp = strtotime($note->created_at);
+                $days_ago = floor((time() - $created_timestamp) / DAY_IN_SECONDS);
 
-                        <?php foreach ($page_data['notes'] as $note) : ?>
-                            <?php
-                            $creator_name = $this->get_user_display_name($note->creator_id);
-                            // Strip @mentions from displayed content
-                            $display_content = preg_replace('/@[\w-]+/', '', $note->content);
-                            $display_content = trim($display_content);
+                if ($days_ago == 0) {
+                    $age_text = 'created today';
+                } elseif ($days_ago == 1) {
+                    $age_text = 'created 1 day ago';
+                } else {
+                    $age_text = 'created ' . $days_ago . ' days ago';
+                }
 
-                            // Calculate how long ago the note was created
-                            $created_timestamp = strtotime($note->created_at);
-                            $days_ago = floor((time() - $created_timestamp) / DAY_IN_SECONDS);
+                $message .= '<div class="note-box">';
+                $message .= '<div class="note-content">' . nl2br(esc_html($display_content)) . '</div>';
+                $message .= '<div class="note-meta">';
+                $message .= '<span class="badge badge-warning">Incomplete</span> ';
+                $message .= 'Assigned by ' . esc_html($creator_name) . ' • ' . esc_html($age_text);
+                $message .= '</div>';
+                $message .= '</div>';
+            }
 
-                            if ($days_ago == 0) {
-                                $age_text = 'today';
-                            } elseif ($days_ago == 1) {
-                                $age_text = '1 day ago';
-                            } else {
-                                $age_text = $days_ago . ' days ago';
-                            }
-                            ?>
-                            <div class="note-item">
-                                <p class="note-content"><?php echo nl2br(esc_html($display_content)); ?></p>
-                                <div class="note-meta">
-                                    <span class="note-author">Assigned by <?php echo esc_html($creator_name); ?></span>
-                                    <span class="note-age">(<?php echo esc_html($age_text); ?>)</span>
-                                </div>
-                            </div>
-                        <?php endforeach; ?>
-                    </div>
-                <?php endforeach; ?>
-            </div>
+            $message .= '<a href="' . esc_url($page_data['page_url']) . '" class="button">Complete Tasks</a>';
+            $message .= '</div>';
 
-            <div class="footer">
-                <p>This is an automated reminder from <a href="<?php echo esc_url($site_url); ?>"><?php echo esc_html($site_name); ?></a></p>
-                <p>You can change your reminder preferences in your <a href="<?php echo esc_url(admin_url('profile.php')); ?>">profile settings</a>.</p>
-            </div>
-        </body>
-        </html>
-        <?php
-        return ob_get_clean();
+            if ($page_data !== end($notes_by_page)) {
+                $message .= '<div class="divider"></div>';
+            }
+        }
+
+        $message .= '<p style="text-align: center; margin-top: 20px; font-size: 13px; color: #6c757d;">';
+        $message .= 'You can change your reminder preferences in your <a href="' . esc_url(admin_url('profile.php')) . '" style="color: #667eea;">profile settings</a>.';
+        $message .= '</p>';
+
+        $message .= $this->get_email_footer();
+
+        return $message;
     }
 
     /**
@@ -2808,217 +2880,91 @@ class PageNotes {
      * Build HTML email template for activity digest
      */
     private function build_activity_digest_template($to_name, $activities, $created_count, $edited_count, $deleted_count) {
-        $site_name = get_bloginfo('name');
-        $site_url = get_site_url();
         $total_count = count($activities);
 
-        ob_start();
-        ?>
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <style>
-                body {
-                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-                    line-height: 1.6;
-                    color: #333;
-                    max-width: 600px;
-                    margin: 0 auto;
-                    padding: 20px;
-                }
-                .header {
-                    background: #007cba;
-                    color: white;
-                    padding: 20px;
-                    border-radius: 5px 5px 0 0;
-                }
-                .header h1 {
-                    margin: 0;
-                    font-size: 24px;
-                }
-                .content {
-                    background: #f0f6fc;
-                    padding: 20px;
-                    border: 1px solid #c3dafe;
-                    border-top: none;
-                }
-                .summary {
-                    background: white;
-                    padding: 15px;
-                    border-radius: 5px;
-                    margin-bottom: 20px;
-                    display: flex;
-                    justify-content: space-around;
-                    text-align: center;
-                }
-                .summary-item {
-                    flex: 1;
-                }
-                .summary-number {
-                    font-size: 32px;
-                    font-weight: bold;
-                    color: #007cba;
-                }
-                .summary-label {
-                    font-size: 12px;
-                    color: #666;
-                    text-transform: uppercase;
-                }
-                .activity-list {
-                    background: white;
-                    border-radius: 5px;
-                    overflow: hidden;
-                }
-                .activity-item {
-                    padding: 15px;
-                    border-bottom: 1px solid #e0e0e0;
-                }
-                .activity-item:last-child {
-                    border-bottom: none;
-                }
-                .activity-header {
-                    display: flex;
-                    align-items: center;
-                    margin-bottom: 8px;
-                }
-                .activity-icon {
-                    width: 30px;
-                    height: 30px;
-                    border-radius: 50%;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    margin-right: 10px;
-                    font-size: 16px;
-                }
-                .activity-icon.created {
-                    background: #d4edda;
-                    color: #155724;
-                }
-                .activity-icon.edited {
-                    background: #fff3cd;
-                    color: #856404;
-                }
-                .activity-icon.deleted {
-                    background: #f8d7da;
-                    color: #721c24;
-                }
-                .activity-user {
-                    font-weight: 600;
-                    color: #333;
-                }
-                .activity-action {
-                    color: #666;
-                    margin-left: 5px;
-                }
-                .activity-time {
-                    font-size: 11px;
-                    color: #999;
-                    margin-left: auto;
-                }
-                .activity-content {
-                    font-size: 13px;
-                    color: #555;
-                    margin-left: 40px;
-                    padding: 8px;
-                    background: #f9f9f9;
-                    border-left: 2px solid #ddd;
-                    border-radius: 3px;
-                }
-                .footer {
-                    background: #f0f6fc;
-                    padding: 15px 20px;
-                    border: 1px solid #c3dafe;
-                    border-top: none;
-                    border-radius: 0 0 5px 5px;
-                    text-align: center;
-                    font-size: 12px;
-                    color: #666;
-                }
-                .footer a {
-                    color: #007cba;
-                    text-decoration: none;
-                }
-            </style>
-        </head>
-        <body>
-            <div class="header">
-                <h1>📊 Daily Activity Digest</h1>
-            </div>
+        $message = $this->get_email_header('Daily Activity Digest', '📊');
 
-            <div class="content">
-                <p>Hi <?php echo esc_html($to_name); ?>,</p>
-                <p>Here's your daily summary of Page Notes activity for the last 24 hours:</p>
+        $message .= '<div class="greeting">Hi ' . esc_html($to_name) . ',</div>';
+        $message .= '<p>Here\'s your daily summary of Page Notes activity for the last 24 hours:</p>';
 
-                <div class="summary">
-                    <div class="summary-item">
-                        <div class="summary-number"><?php echo $created_count; ?></div>
-                        <div class="summary-label">Created</div>
-                    </div>
-                    <div class="summary-item">
-                        <div class="summary-number"><?php echo $edited_count; ?></div>
-                        <div class="summary-label">Edited</div>
-                    </div>
-                    <div class="summary-item">
-                        <div class="summary-number"><?php echo $deleted_count; ?></div>
-                        <div class="summary-label">Deleted</div>
-                    </div>
-                </div>
+        // Summary stats
+        $message .= '<div style="display: flex; gap: 15px; margin: 20px 0; text-align: center;">';
 
-                <div class="activity-list">
-                    <?php foreach ($activities as $activity) : ?>
-                        <?php
-                        $user_name = $this->get_user_display_name($activity->user_id);
-                        $time_ago = human_time_diff(strtotime($activity->created_at), current_time('timestamp')) . ' ago';
+        $message .= '<div style="flex: 1; background: #f8f9fa; padding: 15px; border-radius: 8px;">';
+        $message .= '<div style="font-size: 28px; font-weight: 700; color: #28a745;">' . $created_count . '</div>';
+        $message .= '<div style="font-size: 12px; color: #6c757d; text-transform: uppercase; letter-spacing: 0.5px;">Created</div>';
+        $message .= '</div>';
 
-                        $icon = '•';
-                        $action_text = $activity->action;
-                        if ($activity->action === 'created') {
-                            $icon = '✓';
-                            $action_text = 'created a note';
-                        } elseif ($activity->action === 'edited') {
-                            $icon = '✎';
-                            $action_text = 'edited a note';
-                        } elseif ($activity->action === 'deleted') {
-                            $icon = '✗';
-                            $action_text = 'deleted a note';
-                        }
+        $message .= '<div style="flex: 1; background: #f8f9fa; padding: 15px; border-radius: 8px;">';
+        $message .= '<div style="font-size: 28px; font-weight: 700; color: #667eea;">' . $edited_count . '</div>';
+        $message .= '<div style="font-size: 12px; color: #6c757d; text-transform: uppercase; letter-spacing: 0.5px;">Edited</div>';
+        $message .= '</div>';
 
-                        $content_to_show = $activity->new_content ?: $activity->old_content;
-                        $content_to_show = mb_substr(strip_tags($content_to_show), 0, 100);
-                        if (mb_strlen($content_to_show) > 100) {
-                            $content_to_show .= '...';
-                        }
-                        ?>
-                        <div class="activity-item">
-                            <div class="activity-header">
-                                <div class="activity-icon <?php echo esc_attr($activity->action); ?>">
-                                    <?php echo $icon; ?>
-                                </div>
-                                <span class="activity-user"><?php echo esc_html($user_name); ?></span>
-                                <span class="activity-action"><?php echo esc_html($action_text); ?></span>
-                                <span class="activity-time"><?php echo esc_html($time_ago); ?></span>
-                            </div>
-                            <?php if ($content_to_show) : ?>
-                                <div class="activity-content">
-                                    <?php echo esc_html($content_to_show); ?>
-                                </div>
-                            <?php endif; ?>
-                        </div>
-                    <?php endforeach; ?>
-                </div>
-            </div>
+        $message .= '<div style="flex: 1; background: #f8f9fa; padding: 15px; border-radius: 8px;">';
+        $message .= '<div style="font-size: 28px; font-weight: 700; color: #dc3545;">' . $deleted_count . '</div>';
+        $message .= '<div style="font-size: 12px; color: #6c757d; text-transform: uppercase; letter-spacing: 0.5px;">Deleted</div>';
+        $message .= '</div>';
 
-            <div class="footer">
-                <p>This is an automated daily digest from <a href="<?php echo esc_url($site_url); ?>"><?php echo esc_html($site_name); ?></a></p>
-                <p>You're receiving this because you're the Notes Manager. Disable this in <a href="<?php echo esc_url(admin_url('options-general.php?page=page-notes-settings')); ?>">Page Notes Settings</a>.</p>
-            </div>
-        </body>
-        </html>
-        <?php
-        return ob_get_clean();
+        $message .= '</div>';
+
+        $message .= '<div class="divider"></div>';
+
+        // Activity list
+        foreach ($activities as $activity) {
+            $user_name = $this->get_user_display_name($activity->user_id);
+            $time_ago = human_time_diff(strtotime($activity->created_at), current_time('timestamp')) . ' ago';
+
+            $icon = '•';
+            $badge_class = '';
+            $action_text = $activity->action;
+
+            if ($activity->action === 'created') {
+                $icon = '✓';
+                $action_text = 'created a note';
+                $badge_class = 'badge-success';
+            } elseif ($activity->action === 'edited') {
+                $icon = '✎';
+                $action_text = 'edited a note';
+                $badge_class = '';
+            } elseif ($activity->action === 'deleted') {
+                $icon = '✗';
+                $action_text = 'deleted a note';
+                $badge_class = 'badge-warning';
+            }
+
+            $content_to_show = $activity->new_content ?: $activity->old_content;
+            $content_to_show = mb_substr(strip_tags($content_to_show), 0, 100);
+            if (mb_strlen($content_to_show) > 100) {
+                $content_to_show .= '...';
+            }
+
+            $message .= '<div style="background: #f8f9fa; padding: 12px; margin-bottom: 10px; border-left: 4px solid #667eea; border-radius: 4px;">';
+            $message .= '<div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">';
+            $message .= '<span style="font-size: 16px;">' . $icon . '</span>';
+            $message .= '<strong>' . esc_html($user_name) . '</strong>';
+            $message .= '<span style="color: #6c757d;">' . esc_html($action_text) . '</span>';
+            if ($badge_class) {
+                $message .= '<span class="badge ' . $badge_class . '">' . ucfirst($activity->action) . '</span>';
+            }
+            $message .= '<span style="margin-left: auto; font-size: 13px; color: #999;">' . esc_html($time_ago) . '</span>';
+            $message .= '</div>';
+
+            if ($content_to_show) {
+                $message .= '<div style="font-size: 14px; color: #495057; padding-left: 24px;">';
+                $message .= esc_html($content_to_show);
+                $message .= '</div>';
+            }
+            $message .= '</div>';
+        }
+
+        $message .= '<p style="text-align: center; margin-top: 20px; font-size: 13px; color: #6c757d;">';
+        $message .= 'You\'re receiving this because you\'re the Notes Manager. Disable this in ';
+        $message .= '<a href="' . esc_url(admin_url('options-general.php?page=page-notes-settings')) . '" style="color: #667eea;">Page Notes Settings</a>.';
+        $message .= '</p>';
+
+        $message .= $this->get_email_footer();
+
+        return $message;
     }
 }
 
