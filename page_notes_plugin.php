@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Page Notes
  * Description: Add collaborative notes to any element on your WordPress pages.
- * Version: 1.2.1
+ * Version: 1.4.0
  * Author: Murray Chapman
  * Author URI: https://muzkore.com
  * License: GPL v2 or later
@@ -15,7 +15,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Define plugin constants
-define('PAGE_NOTES_VERSION', '1.2.1');
+define('PAGE_NOTES_VERSION', '1.4.0');
 define('PAGE_NOTES_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('PAGE_NOTES_PLUGIN_URL', plugin_dir_url(__FILE__));
 
@@ -39,7 +39,6 @@ class PageNotes {
         add_action('init', array($this, 'init'));
         add_action('admin_bar_menu', array($this, 'add_admin_bar_button'), 100);
         add_action('wp_enqueue_scripts', array($this, 'enqueue_assets'));
-        add_action('admin_enqueue_scripts', array($this, 'enqueue_assets'));
 
         // Admin settings page
         add_action('admin_menu', array($this, 'add_settings_page'));
@@ -142,6 +141,9 @@ class PageNotes {
         // Update plugin version in database
         update_option('page_notes_db_version', PAGE_NOTES_VERSION);
 
+        // Create custom 'Reviewer' role for clients
+        $this->create_reviewer_role();
+
         // Schedule daily reminder cron if not already scheduled
         if (!wp_next_scheduled('page_notes_send_reminders')) {
             $reminder_time = get_option('page_notes_reminder_time', '09:00');
@@ -172,7 +174,44 @@ class PageNotes {
         wp_clear_scheduled_hook('page_notes_send_activity_digest');
     }
 
-    
+    /**
+     * Create custom 'Reviewer' role for clients
+     * Reviewers can view the site and add notes, but cannot edit content
+     */
+    private function create_reviewer_role() {
+        // Remove role if it exists to ensure clean slate
+        remove_role('page_notes_reviewer');
+
+        // Add the Reviewer role with minimal capabilities
+        add_role(
+            'page_notes_reviewer',
+            'Page Notes Reviewer',
+            array(
+                'read' => true,                    // Can view the site
+                'use_page_notes' => true,          // Custom capability for page notes
+            )
+        );
+
+        // Grant use_page_notes capability to editors and admins
+        $editor = get_role('editor');
+        if ($editor) {
+            $editor->add_cap('use_page_notes');
+        }
+
+        $admin = get_role('administrator');
+        if ($admin) {
+            $admin->add_cap('use_page_notes');
+        }
+    }
+
+    /**
+     * Check if current user has permission to use page notes
+     * Users with 'use_page_notes' capability OR 'edit_posts' capability can use notes
+     */
+    private function can_use_page_notes() {
+        return current_user_can('use_page_notes') || current_user_can('edit_posts');
+    }
+
     /**
      * Initialize plugin
      */
@@ -184,8 +223,13 @@ class PageNotes {
      * Add button to admin bar
      */
     public function add_admin_bar_button($wp_admin_bar) {
-        // Only show to users who can edit posts and have Page Notes enabled
-        if (!current_user_can('edit_posts')) {
+        // Don't show in admin dashboard - only on public-facing pages
+        if (is_admin()) {
+            return;
+        }
+
+        // Only show to users who can use page notes and have it enabled
+        if (!$this->can_use_page_notes()) {
             return;
         }
 
@@ -210,8 +254,13 @@ class PageNotes {
      * Enqueue CSS and JavaScript
      */
     public function enqueue_assets() {
-        // Only load for users who can edit posts and have Page Notes enabled
-        if (!current_user_can('edit_posts')) {
+        // Don't load in admin dashboard - only on public-facing pages
+        if (is_admin()) {
+            return;
+        }
+
+        // Only load for users who can use page notes and have it enabled
+        if (!$this->can_use_page_notes()) {
             return;
         }
 
@@ -256,7 +305,7 @@ class PageNotes {
         check_ajax_referer('page_notes_nonce', 'nonce');
 
         // Verify user has permission to view notes
-        if (!current_user_can('edit_posts') || !$this->is_page_notes_enabled_for_user()) {
+        if (!$this->can_use_page_notes() || !$this->is_page_notes_enabled_for_user()) {
             wp_send_json_error('Insufficient permissions');
             return;
         }
@@ -360,7 +409,7 @@ class PageNotes {
         check_ajax_referer('page_notes_nonce', 'nonce');
 
         // Verify user has permission to create notes
-        if (!current_user_can('edit_posts') || !$this->is_page_notes_enabled_for_user()) {
+        if (!$this->can_use_page_notes() || !$this->is_page_notes_enabled_for_user()) {
             wp_send_json_error('Insufficient permissions');
             return;
         }
@@ -553,7 +602,7 @@ class PageNotes {
         check_ajax_referer('page_notes_nonce', 'nonce');
 
         // Verify user has permission to edit notes
-        if (!current_user_can('edit_posts') || !$this->is_page_notes_enabled_for_user()) {
+        if (!$this->can_use_page_notes() || !$this->is_page_notes_enabled_for_user()) {
             wp_send_json_error('Insufficient permissions');
             return;
         }
@@ -658,7 +707,7 @@ class PageNotes {
         check_ajax_referer('page_notes_nonce', 'nonce');
 
         // Verify user has permission to delete notes
-        if (!current_user_can('edit_posts') || !$this->is_page_notes_enabled_for_user()) {
+        if (!$this->can_use_page_notes() || !$this->is_page_notes_enabled_for_user()) {
             wp_send_json_error('Insufficient permissions');
             return;
         }
@@ -714,7 +763,7 @@ class PageNotes {
         check_ajax_referer('page_notes_nonce', 'nonce');
 
         // Verify user has permission to view notes
-        if (!current_user_can('edit_posts') || !$this->is_page_notes_enabled_for_user()) {
+        if (!$this->can_use_page_notes() || !$this->is_page_notes_enabled_for_user()) {
             wp_send_json_error('Insufficient permissions');
             return;
         }
@@ -1777,7 +1826,7 @@ class PageNotes {
         check_ajax_referer('page_notes_nonce', 'nonce');
 
         // Verify user has permission to use notes
-        if (!current_user_can('edit_posts') || !$this->is_page_notes_enabled_for_user()) {
+        if (!$this->can_use_page_notes() || !$this->is_page_notes_enabled_for_user()) {
             wp_send_json_error('Insufficient permissions');
             return;
         }
@@ -1885,7 +1934,7 @@ class PageNotes {
         check_ajax_referer('page_notes_nonce', 'nonce');
 
         // Verify user has permission to view pending count
-        if (!current_user_can('edit_posts') || !$this->is_page_notes_enabled_for_user()) {
+        if (!$this->can_use_page_notes() || !$this->is_page_notes_enabled_for_user()) {
             wp_send_json_error('Insufficient permissions');
             return;
         }

@@ -4,7 +4,7 @@ Tags: notes, collaboration, annotations, team, workflow
 Requires at least: 5.0
 Tested up to: 6.4
 Requires PHP: 7.4
-Stable tag: 1.2.1
+Stable tag: 1.4.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -64,7 +64,7 @@ The documentation includes a clear list of stored data and practical steps for r
 
 = Who can see the notes? =
 
-Only logged-in users with the `edit_posts` capability and Page Notes enabled can see notes. Role access is configured in **Settings > Page Notes**, and individual user overrides may apply.
+Only logged-in users with the `use_page_notes` or `edit_posts` capability and Page Notes enabled can see notes. Role access is configured in **Settings > Page Notes**. You can also assign users the "Page Notes Reviewer" role for client access without editing permissions.
 
 = Can I disable email notifications? =
 
@@ -97,6 +97,22 @@ Notes remain visible in the notes panel even if the original element is no longe
 
 == Changelog ==
 
+= 1.4.0 =
+* Rewritten: Complete element selector generation system for maximum stability
+* Added: WordPress Block Editor (Gutenberg) support - notes survive block reordering
+* Added: Page builder support (Elementor, Beaver Builder, Divi, WPBakery)
+* Improved: Intelligent selector fallback system with 7 strategies
+* Improved: Parent ID + relative path strategy avoids fragile nth-child selectors
+* Added: Permanent data attribute fallback for dynamic content
+* Changed: Notes now remain attached to elements even when page structure changes
+
+= 1.3.0 =
+* Added: Custom "Page Notes Reviewer" role for client access
+* Added: use_page_notes capability for granular permission control
+* Changed: Plugin only loads on frontend (not in admin dashboard)
+* Improved: Permission system supports both reviewers and editors
+* Added: Reviewers can add notes without edit_posts capability
+
 = 1.2.1 =
 * Added: Unified email template system
 * Added: Data Management settings section
@@ -120,6 +136,12 @@ Notes remain visible in the notes panel even if the original element is no longe
 * Initial release
 
 == Upgrade Notice ==
+
+= 1.4.0 =
+Major stability improvements! Element selectors now work with WordPress blocks and page builders. Notes survive content reordering.
+
+= 1.3.0 =
+Adds custom Reviewer role for clients. Plugin now only loads on frontend pages.
 
 = 1.2.1 =
 Adds data management controls, improves capability checks, and refines email template handling.

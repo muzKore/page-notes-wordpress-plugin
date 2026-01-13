@@ -741,11 +741,11 @@
         
         /**
          * GENERATE SELECTOR
-         * Creates a unique CSS selector for an element
-         * This is how we "remember" which element a note is attached to
+         * Creates a unique CSS selector for an element with maximum stability
+         * Optimized for WordPress blocks and page builders (Elementor, Beaver Builder, Divi, etc.)
          */
         generateSelector: function(element) {
-            // Strategy 1: If element has an ID, use that (IDs are unique)
+            // Strategy 1: Element has a unique ID
             if (element.id) {
                 const selector = '#' + CSS.escape(element.id);
                 if (this.validateSelector(selector, element)) {
@@ -753,10 +753,250 @@
                 }
             }
 
-            // Strategy 2: Try using data attributes (more stable than classes)
+            // Strategy 2: WordPress Block Editor - Check for block-level data attributes
+            // Gutenberg blocks often have data-block, data-type, or unique IDs on wrapper divs
+            const blockSelectors = this.tryWordPressBlockSelector(element);
+            if (blockSelectors) {
+                return blockSelectors;
+            }
+
+            // Strategy 3: Page Builder specific attributes (Elementor, Beaver Builder, Divi)
+            const builderSelector = this.tryPageBuilderSelector(element);
+            if (builderSelector) {
+                return builderSelector;
+            }
+
+            // Strategy 4: Look for closest parent with stable ID, then build relative path
+            const parentIdSelector = this.tryParentIdSelector(element);
+            if (parentIdSelector) {
+                return parentIdSelector;
+            }
+
+            // Strategy 5: Use stable data attributes on the element itself
+            const dataSelector = this.tryDataAttributeSelector(element);
+            if (dataSelector) {
+                return dataSelector;
+            }
+
+            // Strategy 6: Use stable CSS classes (avoiding dynamic ones)
+            const classSelector = this.tryStableClassSelector(element);
+            if (classSelector) {
+                return classSelector;
+            }
+
+            // Strategy 7: LAST RESORT - Add our own permanent data attribute
+            // This is the most stable option as it persists with the element
+            const uniqueId = 'pn-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+            element.setAttribute('data-page-note-id', uniqueId);
+            return `[data-page-note-id="${uniqueId}"]`;
+        },
+
+        /**
+         * Try to create selector using WordPress block editor attributes
+         */
+        tryWordPressBlockSelector: function(element) {
+            // Check element itself and up to 5 parents for block attributes
+            let current = element;
+            let depth = 0;
+            const maxDepth = 5;
+
+            while (current && current !== document.body && depth < maxDepth) {
+                // WordPress blocks often have wp-block-* classes
+                if (current.className && typeof current.className === 'string') {
+                    const blockClasses = current.className.split(' ')
+                        .filter(c => c.startsWith('wp-block-'));
+
+                    if (blockClasses.length > 0) {
+                        // Found a block wrapper, build selector from here
+                        const blockSelector = current.tagName.toLowerCase() + '.' +
+                            blockClasses.map(c => CSS.escape(c)).join('.');
+
+                        // If we're selecting the block itself
+                        if (current === element && this.validateSelector(blockSelector, element)) {
+                            return blockSelector;
+                        }
+
+                        // If we're selecting a child of the block, build path from block
+                        if (current !== element) {
+                            const childPath = this.buildPathFromAncestor(element, current);
+                            if (childPath) {
+                                const fullSelector = blockSelector + ' ' + childPath;
+                                if (this.validateSelector(fullSelector, element)) {
+                                    return fullSelector;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Check for WordPress block data attributes
+                if (current.hasAttribute('data-block')) {
+                    const blockId = current.getAttribute('data-block');
+                    const selector = `[data-block="${CSS.escape(blockId)}"]`;
+
+                    if (current === element && this.validateSelector(selector, element)) {
+                        return selector;
+                    }
+
+                    if (current !== element) {
+                        const childPath = this.buildPathFromAncestor(element, current);
+                        if (childPath) {
+                            const fullSelector = selector + ' ' + childPath;
+                            if (this.validateSelector(fullSelector, element)) {
+                                return fullSelector;
+                            }
+                        }
+                    }
+                }
+
+                current = current.parentElement;
+                depth++;
+            }
+
+            return null;
+        },
+
+        /**
+         * Try to create selector using page builder attributes
+         */
+        tryPageBuilderSelector: function(element) {
+            // Common page builder attributes to look for
+            const builderAttrs = [
+                'data-id',           // Elementor
+                'data-element_type', // Elementor
+                'data-widget_type',  // Elementor
+                'data-node',         // Beaver Builder
+                'data-bb-id',        // Beaver Builder
+                'data-et-multi-view', // Divi
+                'data-et-id',        // Divi
+                'data-vc-',          // WPBakery (multiple attributes start with this)
+            ];
+
+            let current = element;
+            let depth = 0;
+            const maxDepth = 5;
+
+            while (current && current !== document.body && depth < maxDepth) {
+                for (const attr of builderAttrs) {
+                    if (attr.endsWith('-')) {
+                        // Prefix match (like data-vc-)
+                        const matchingAttrs = Array.from(current.attributes)
+                            .filter(a => a.name.startsWith(attr));
+
+                        if (matchingAttrs.length > 0) {
+                            const selector = element.tagName.toLowerCase() +
+                                matchingAttrs.slice(0, 2).map(a =>
+                                    `[${a.name}="${CSS.escape(a.value)}"]`
+                                ).join('');
+
+                            if (this.validateSelector(selector, element)) {
+                                return selector;
+                            }
+                        }
+                    } else {
+                        // Exact attribute match
+                        if (current.hasAttribute(attr)) {
+                            const value = current.getAttribute(attr);
+                            const selector = `[${attr}="${CSS.escape(value)}"]`;
+
+                            if (current === element && this.validateSelector(selector, element)) {
+                                return selector;
+                            }
+
+                            if (current !== element) {
+                                const childPath = this.buildPathFromAncestor(element, current);
+                                if (childPath) {
+                                    const fullSelector = selector + ' ' + childPath;
+                                    if (this.validateSelector(fullSelector, element)) {
+                                        return fullSelector;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                current = current.parentElement;
+                depth++;
+            }
+
+            return null;
+        },
+
+        /**
+         * Try to find a parent with an ID and build path from there
+         */
+        tryParentIdSelector: function(element) {
+            let current = element.parentElement;
+            let depth = 0;
+            const maxDepth = 8;
+
+            while (current && current !== document.body && depth < maxDepth) {
+                if (current.id) {
+                    const parentSelector = '#' + CSS.escape(current.id);
+                    const childPath = this.buildPathFromAncestor(element, current);
+
+                    if (childPath) {
+                        const fullSelector = parentSelector + ' ' + childPath;
+                        if (this.validateSelector(fullSelector, element)) {
+                            return fullSelector;
+                        }
+                    }
+                }
+
+                current = current.parentElement;
+                depth++;
+            }
+
+            return null;
+        },
+
+        /**
+         * Build a stable path from ancestor to element
+         * Avoids nth-child when possible, uses classes and attributes
+         */
+        buildPathFromAncestor: function(element, ancestor) {
+            const path = [];
+            let current = element;
+            let maxDepth = 6;
+
+            while (current && current !== ancestor && maxDepth > 0) {
+                let segment = current.tagName.toLowerCase();
+
+                // Try to add identifying features without nth-child
+                if (current.id) {
+                    segment = '#' + CSS.escape(current.id);
+                    path.unshift(segment);
+                    break; // ID is unique enough
+                } else if (current.className && typeof current.className === 'string') {
+                    const stableClasses = current.className
+                        .split(' ')
+                        .filter(c => c.trim())
+                        .filter(c => !(/^(is-|has-|active|hover|focus|selected|current)/.test(c)))
+                        .filter(c => !/\d{5,}/.test(c))
+                        .slice(0, 2);
+
+                    if (stableClasses.length > 0) {
+                        segment += '.' + stableClasses.map(c => CSS.escape(c)).join('.');
+                    }
+                }
+
+                path.unshift(segment);
+                current = current.parentElement;
+                maxDepth--;
+            }
+
+            return path.length > 0 ? path.join(' > ') : null;
+        },
+
+        /**
+         * Try data attribute selector
+         */
+        tryDataAttributeSelector: function(element) {
             const dataAttrs = Array.from(element.attributes)
-                .filter(attr => attr.name.startsWith('data-'))
-                .slice(0, 2); // Use up to 2 data attributes
+                .filter(attr => attr.name.startsWith('data-') &&
+                               !attr.name.startsWith('data-page-note-')) // Don't use our own attributes
+                .slice(0, 2);
 
             if (dataAttrs.length > 0) {
                 const selector = element.tagName.toLowerCase() +
@@ -766,15 +1006,20 @@
                 }
             }
 
-            // Strategy 3: Use classes, but filter out dynamic/temporary ones
+            return null;
+        },
+
+        /**
+         * Try stable class selector
+         */
+        tryStableClassSelector: function(element) {
             if (element.className && typeof element.className === 'string') {
-                // Filter out classes that look dynamic (contain numbers, hashes, etc.)
                 const stableClasses = element.className
                     .split(' ')
                     .filter(c => c.trim())
-                    .filter(c => !(/^(wp-|is-|has-|active|hover|focus|selected)/.test(c))) // Skip state classes
-                    .filter(c => !/\d{5,}/.test(c)) // Skip classes with long numbers (likely generated)
-                    .slice(0, 3); // Use max 3 classes
+                    .filter(c => !(/^(wp-|is-|has-|active|hover|focus|selected|current|et-|vc-|fl-)/.test(c)))
+                    .filter(c => !/\d{5,}/.test(c))
+                    .slice(0, 3);
 
                 if (stableClasses.length > 0) {
                     const selector = element.tagName.toLowerCase() + '.' +
@@ -785,37 +1030,7 @@
                 }
             }
 
-            // Strategy 4: Build path from body using nth-of-type
-            const path = [];
-            let current = element;
-            let maxDepth = 10; // Prevent infinite loops and overly long selectors
-
-            while (current && current !== document.body && maxDepth > 0) {
-                let selector = current.tagName.toLowerCase();
-
-                // Get siblings of the same type
-                const siblings = Array.from(current.parentElement.children)
-                    .filter(el => el.tagName === current.tagName);
-
-                if (siblings.length > 1) {
-                    const index = siblings.indexOf(current) + 1;
-                    selector += `:nth-of-type(${index})`;
-                }
-
-                path.unshift(selector);
-                current = current.parentElement;
-                maxDepth--;
-            }
-
-            const finalSelector = path.join(' > ');
-            if (this.validateSelector(finalSelector, element)) {
-                return finalSelector;
-            }
-
-            // Fallback: Generate a unique data attribute
-            const uniqueId = 'pn-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
-            element.setAttribute('data-page-note-id', uniqueId);
-            return `[data-page-note-id="${uniqueId}"]`;
+            return null;
         },
 
         /**

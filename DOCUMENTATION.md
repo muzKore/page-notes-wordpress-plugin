@@ -1,6 +1,6 @@
 # Page Notes Plugin Documentation
 
-Version 1.2.1
+Version 1.4.0
 
 ## Overview
 
@@ -29,9 +29,11 @@ Page Notes is a WordPress plugin that enables team collaboration by allowing use
 ### Element-Specific Notes
 
 - Attach notes to any HTML element on a page
-- Notes are linked to specific page elements using CSS selectors
+- Notes are linked using intelligent CSS selectors optimized for WordPress blocks and page builders
 - Visual highlighting shows which element a note refers to
 - Notes persist across page visits and are visible to authorised users
+- **NEW in v1.4.0:** Selectors survive content reordering and page structure changes
+- **NEW in v1.4.0:** Full support for Gutenberg blocks, Elementor, Beaver Builder, Divi, and WPBakery
 
 ### Threaded Conversations
 
@@ -164,6 +166,35 @@ Page Notes is a WordPress plugin that enables team collaboration by allowing use
 ---
 
 ## Advanced Features
+
+### Element Selector Stability (v1.4.0)
+
+Page Notes uses an intelligent selector generation system to ensure notes remain attached to the correct elements even when your page structure changes.
+
+**Selector Strategy (in priority order):**
+
+1. **Element ID** - If an element has a unique ID, that's used (most stable)
+2. **WordPress Blocks** - Detects Gutenberg block classes and data attributes
+3. **Page Builder Attributes** - Recognizes Elementor, Beaver Builder, Divi, WPBakery attributes
+4. **Parent ID + Path** - Finds nearest parent with ID and builds relative path
+5. **Data Attributes** - Uses existing stable data attributes
+6. **Stable CSS Classes** - Filters out dynamic/temporary classes
+7. **Permanent Marker** - Adds a unique data attribute as ultimate fallback
+
+**Benefits:**
+
+- Notes survive block reordering and content restructuring
+- Works with WordPress Block Editor (Gutenberg)
+- Compatible with all major page builders
+- Avoids fragile position-based selectors (nth-child, nth-of-type)
+- Adapts to different content management systems
+
+**What This Means:**
+
+- You can reorder blocks without breaking note attachments
+- Adding new content above/below doesn't affect existing notes
+- Page structure changes don't orphan notes
+- Notes remain accurate across theme changes (in most cases)
 
 ### @Mention System
 
@@ -484,11 +515,20 @@ View note: [link]
 - Same as Editor (if role is enabled in settings)
 - Limited by role access configuration
 
+**Page Notes Reviewer (NEW in v1.3.0):**
+
+- Custom role designed for client access
+- Can view the site and add notes
+- **Cannot** access WordPress admin dashboard
+- **Cannot** edit posts, pages, or any content
+- **Cannot** install plugins or modify site settings
+- Has `use_page_notes` capability but not `edit_posts`
+- Perfect for clients providing feedback without full site access
+
 **Note on Subscribers:**
 
-- Subscribers do not have the `edit_posts` capability by default in WordPress
-- Page Notes requires `edit_posts` capability to function
-- Subscribers cannot use Page Notes unless you grant them the `edit_posts` capability (not recommended for most sites)
+- Subscribers do not have the `edit_posts` or `use_page_notes` capability by default
+- Subscribers cannot use Page Notes unless you assign them the Page Notes Reviewer role or grant them appropriate capabilities
 - If you need client/stakeholder commenting, consider creating a custom role with limited capabilities rather than granting `edit_posts` to Subscribers
 
 ### Individual Access Control
