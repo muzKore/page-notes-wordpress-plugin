@@ -2365,10 +2365,12 @@ class PageNotes {
 
         // Convert array to CSV format
         foreach ($csv_data as $row) {
+            // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- CSV export, data is sanitized in array_to_csv_line
             echo $this->array_to_csv_line($row);
         }
 
         $csv_content = ob_get_clean();
+        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- CSV export output, already sanitized
         echo $csv_content;
     }
 
