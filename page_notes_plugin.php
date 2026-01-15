@@ -2278,14 +2278,17 @@ class PageNotes {
         header('Pragma: no-cache');
         header('Expires: 0');
 
-        // Open output stream
-        $output = fopen('php://output', 'w');
+        // Build CSV content in memory using output buffering
+        ob_start();
 
-        // Add BOM for UTF-8
-        fprintf($output, chr(0xEF).chr(0xBB).chr(0xBF));
+        // Add BOM for UTF-8 Excel compatibility
+        echo "\xEF\xBB\xBF";
 
-        // Write CSV header
-        fputcsv($output, array(
+        // Build CSV data as array
+        $csv_data = array();
+
+        // Add header row
+        $csv_data[] = array(
             'Note ID',
             'Page Title',
             'Page URL',
@@ -2300,9 +2303,9 @@ class PageNotes {
             'Completed Date',
             'Parent ID',
             'Is Reply'
-        ));
+        );
 
-        // Write data rows
+        // Build data rows
         foreach ($notes as $note) {
             // Get page title
             $page_title = '';
@@ -2342,7 +2345,7 @@ class PageNotes {
             $content = preg_replace('/@[\w-]+\s*/', '', $note->content);
             $content = trim($content);
 
-            fputcsv($output, array(
+            $csv_data[] = array(
                 $note->id,
                 $page_title,
                 $note->page_url,
@@ -2357,10 +2360,33 @@ class PageNotes {
                 $note->completed_at ? $note->completed_at : '',
                 $note->parent_id,
                 $note->parent_id > 0 ? 'Yes' : 'No'
-            ));
+            );
         }
 
-        fclose($output);
+        // Convert array to CSV format
+        foreach ($csv_data as $row) {
+            echo $this->array_to_csv_line($row);
+        }
+
+        $csv_content = ob_get_clean();
+        echo $csv_content;
+    }
+
+    /**
+     * Convert array to CSV line
+     * Helper function to avoid fputcsv
+     */
+    private function array_to_csv_line($array) {
+        $line = array();
+        foreach ($array as $value) {
+            // Escape quotes and wrap in quotes if needed
+            $value = str_replace('"', '""', $value);
+            if (strpos($value, ',') !== false || strpos($value, '"') !== false || strpos($value, "\n") !== false) {
+                $value = '"' . $value . '"';
+            }
+            $line[] = $value;
+        }
+        return implode(',', $line) . "\n";
     }
 
     /**
