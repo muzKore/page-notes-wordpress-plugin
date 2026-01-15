@@ -312,7 +312,7 @@ class PageNotes {
 
         global $wpdb;
         $table_name = $wpdb->prefix . 'page_notes';
-        $page_id = intval($_POST['page_id']);
+        $page_id = isset($_POST['page_id']) ? intval($_POST['page_id']) : 0;
         $page_url = isset($_POST['page_url']) ? sanitize_text_field(wp_unslash($_POST['page_url'])) : '';
 
         // Get current user ID for visibility filtering
@@ -1022,6 +1022,11 @@ class PageNotes {
             return false;
         }
 
+        // Verify nonce (WordPress profile pages use _wpnonce)
+        if (!isset($_POST['_wpnonce']) || !wp_verify_nonce(sanitize_text_field(wp_unslash($_POST['_wpnonce'])), 'update-user_' . $user_id)) {
+            return false;
+        }
+
         // Only admins can grant individual access (and not to themselves)
         if (current_user_can('manage_options') && get_current_user_id() != $user_id) {
             $individual_access = isset($_POST['page_notes_individual_access']) ? '1' : '0';
@@ -1134,7 +1139,7 @@ class PageNotes {
     public function render_settings_page() {
         // Check user capabilities
         if (!current_user_can('manage_options')) {
-            wp_die(__('You do not have sufficient permissions to access this page.'));
+            wp_die(__('You do not have sufficient permissions to access this page.', 'page-notes'));
         }
 
         // Get all WordPress roles
@@ -1436,7 +1441,7 @@ class PageNotes {
                         },
                         body: new URLSearchParams({
                             action: 'pn_send_activity_digest',
-                            nonce: '<?php echo wp_create_nonce('page_notes_nonce'); ?>'
+                            nonce: '<?php echo esc_js(wp_create_nonce('page_notes_nonce')); ?>'
                         })
                     })
                     .then(response => response.json())
@@ -1722,7 +1727,7 @@ class PageNotes {
                 </div>
                 <div class="email-title-section">
                     <h1 class="email-title">
-                        <span class="email-icon"><?php echo $icon; ?></span>
+                        <span class="email-icon"><?php echo esc_html($icon); ?></span>
                         <span><?php echo esc_html($email_title); ?></span>
                     </h1>
                 </div>
@@ -2659,11 +2664,11 @@ class PageNotes {
     public function add_cron_schedules($schedules) {
         $schedules['page_notes_4hours'] = array(
             'interval' => 4 * HOUR_IN_SECONDS,
-            'display' => __('Every 4 hours')
+            'display' => __('Every 4 hours', 'page-notes')
         );
         $schedules['page_notes_8hours'] = array(
             'interval' => 8 * HOUR_IN_SECONDS,
-            'display' => __('Every 8 hours')
+            'display' => __('Every 8 hours', 'page-notes')
         );
         return $schedules;
     }
@@ -3033,7 +3038,7 @@ class PageNotes {
             }
 
             $content_to_show = $activity->new_content ?: $activity->old_content;
-            $content_to_show = mb_substr(strip_tags($content_to_show), 0, 100);
+            $content_to_show = mb_substr(wp_strip_all_tags($content_to_show), 0, 100);
             if (mb_strlen($content_to_show) > 100) {
                 $content_to_show .= '...';
             }
