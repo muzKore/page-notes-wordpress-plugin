@@ -1,5 +1,9 @@
 {
   "identifier" : "1C553547-E4E0-492B-A31F-0A16BF50F035",
+  "ignoredFilePatterns" : [
+    "_backup",
+    ".claude"
+  ],
   "localPath" : "..",
   "remotePath" : "\/public_html\/_dev_sites\/chadnotes.muzkore.com\/wp-content\/plugins",
   "server" : "muzkore.com",

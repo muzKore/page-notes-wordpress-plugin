@@ -2701,6 +2701,7 @@ class PageNotes {
         }
 
         // Get all users with reminders enabled
+        // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key, WordPress.DB.SlowDBQuery.slow_db_query_meta_value -- Required for reminder functionality
         $users = get_users(array(
             'meta_key' => 'page_notes_reminders_enabled',
             'meta_value' => '1'

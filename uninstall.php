@@ -20,10 +20,10 @@ wp_clear_scheduled_hook('page_notes_send_activity_digest');
 
 // Check if user wants to delete data on uninstall (default: NO)
 // Using strict comparison to avoid issues with empty strings or null
-$delete_on_uninstall = get_option('page_notes_delete_on_uninstall', '0');
+$page_notes_delete_on_uninstall = get_option('page_notes_delete_on_uninstall', '0');
 
 // Only delete data if explicitly enabled by the user (must be string '1')
-if ($delete_on_uninstall !== '1') {
+if ($page_notes_delete_on_uninstall !== '1') {
     // Data preservation mode - exit without deleting anything
     return;
 }
@@ -35,13 +35,13 @@ if ($delete_on_uninstall !== '1') {
 global $wpdb;
 
 // Drop the custom tables
-$notes_table = $wpdb->prefix . 'page_notes';
-$activity_table = $wpdb->prefix . 'page_notes_activity';
-$completion_table = $wpdb->prefix . 'page_notes_completions';
+$page_notes_table = $wpdb->prefix . 'page_notes';
+$page_notes_activity_table = $wpdb->prefix . 'page_notes_activity';
+$page_notes_completion_table = $wpdb->prefix . 'page_notes_completions';
 
-$wpdb->query("DROP TABLE IF EXISTS $notes_table");
-$wpdb->query("DROP TABLE IF EXISTS $activity_table");
-$wpdb->query("DROP TABLE IF EXISTS $completion_table");
+$wpdb->query("DROP TABLE IF EXISTS $page_notes_table");
+$wpdb->query("DROP TABLE IF EXISTS $page_notes_activity_table");
+$wpdb->query("DROP TABLE IF EXISTS $page_notes_completion_table");
 
 // Delete all plugin options
 delete_option('page_notes_version');
