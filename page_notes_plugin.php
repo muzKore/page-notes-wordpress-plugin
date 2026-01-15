@@ -323,6 +323,7 @@ class PageNotes {
         $is_manager = !empty($manager_user_id) && $current_user_id == $manager_user_id;
 
         // Query by both page_id AND page_url to catch notes that might have been stored with different IDs
+        // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Table name is safe, constructed from $wpdb->prefix
         $notes = $wpdb->get_results($wpdb->prepare(
             "SELECT n.*,
                 u.display_name as user_name,
@@ -456,7 +457,7 @@ class PageNotes {
         // Validate URL format (if provided)
         // Note: We use a relaxed validation since WordPress URLs can vary
         if (!empty($page_url)) {
-            $parsed_url = parse_url($page_url);
+            $parsed_url = wp_parse_url($page_url);
             if ($parsed_url === false || !isset($parsed_url['scheme'])) {
                 // If parse_url fails or no scheme, it might be a relative URL - that's OK
                 // We'll just store it as-is
@@ -814,7 +815,7 @@ class PageNotes {
 
             // Strategy 3: If still no title, extract from URL path (for non-post pages)
             if (empty($title) && !empty($page->page_url)) {
-                $parsed = parse_url($page->page_url);
+                $parsed = wp_parse_url($page->page_url);
                 if (isset($parsed['path'])) {
                     $path = trim($parsed['path'], '/');
                     $title = $path ? ucwords(str_replace(['-', '_', '/'], ' ', $path)) : 'Home';
@@ -1065,16 +1066,66 @@ class PageNotes {
      * Register plugin settings
      */
     public function register_settings() {
-        register_setting('page_notes_settings', 'page_notes_allowed_roles');
-        register_setting('page_notes_settings', 'page_notes_manager_user_id');
-        register_setting('page_notes_settings', 'page_notes_instant_email');
-        register_setting('page_notes_settings', 'page_notes_auto_send_interval');
-        register_setting('page_notes_settings', 'page_notes_reminders_enabled');
-        register_setting('page_notes_settings', 'page_notes_reminder_time');
-        register_setting('page_notes_settings', 'page_notes_character_limit');
-        register_setting('page_notes_settings', 'page_notes_activity_digest_enabled');
-        register_setting('page_notes_settings', 'page_notes_completion_notification');
-        register_setting('page_notes_settings', 'page_notes_delete_on_uninstall');
+        register_setting('page_notes_settings', 'page_notes_allowed_roles', array(
+            'type' => 'array',
+            'sanitize_callback' => array($this, 'sanitize_allowed_roles'),
+            'default' => array()
+        ));
+        register_setting('page_notes_settings', 'page_notes_manager_user_id', array(
+            'type' => 'integer',
+            'sanitize_callback' => 'absint',
+            'default' => 0
+        ));
+        register_setting('page_notes_settings', 'page_notes_instant_email', array(
+            'type' => 'string',
+            'sanitize_callback' => 'sanitize_text_field',
+            'default' => 'disabled'
+        ));
+        register_setting('page_notes_settings', 'page_notes_auto_send_interval', array(
+            'type' => 'string',
+            'sanitize_callback' => 'sanitize_text_field',
+            'default' => 'daily'
+        ));
+        register_setting('page_notes_settings', 'page_notes_reminders_enabled', array(
+            'type' => 'string',
+            'sanitize_callback' => 'sanitize_text_field',
+            'default' => 'disabled'
+        ));
+        register_setting('page_notes_settings', 'page_notes_reminder_time', array(
+            'type' => 'string',
+            'sanitize_callback' => 'sanitize_text_field',
+            'default' => '09:00'
+        ));
+        register_setting('page_notes_settings', 'page_notes_character_limit', array(
+            'type' => 'integer',
+            'sanitize_callback' => 'absint',
+            'default' => 150
+        ));
+        register_setting('page_notes_settings', 'page_notes_activity_digest_enabled', array(
+            'type' => 'string',
+            'sanitize_callback' => 'sanitize_text_field',
+            'default' => 'disabled'
+        ));
+        register_setting('page_notes_settings', 'page_notes_completion_notification', array(
+            'type' => 'string',
+            'sanitize_callback' => 'sanitize_text_field',
+            'default' => 'disabled'
+        ));
+        register_setting('page_notes_settings', 'page_notes_delete_on_uninstall', array(
+            'type' => 'string',
+            'sanitize_callback' => 'sanitize_text_field',
+            'default' => 'no'
+        ));
+    }
+
+    /**
+     * Sanitize allowed roles array
+     */
+    public function sanitize_allowed_roles($input) {
+        if (!is_array($input)) {
+            return array();
+        }
+        return array_map('sanitize_text_field', $input);
     }
 
     /**
@@ -1247,7 +1298,7 @@ class PageNotes {
                                     for ($hour = 0; $hour < 24; $hour++) {
                                         foreach (array('00', '30') as $minute) {
                                             $time_value = sprintf('%02d:%s', $hour, $minute);
-                                            $time_label = date('g:i A', strtotime($time_value));
+                                            $time_label = wp_date('g:i A', strtotime($time_value));
                                             ?>
                                             <option value="<?php echo esc_attr($time_value); ?>" <?php selected($reminder_time, $time_value); ?>>
                                                 <?php echo esc_html($time_label); ?>
@@ -2005,7 +2056,7 @@ class PageNotes {
         $notes_table = $wpdb->prefix . 'page_notes';
 
         // Get activity from last 24 hours
-        $yesterday = date('Y-m-d H:i:s', strtotime('-24 hours'));
+        $yesterday = wp_date('Y-m-d H:i:s', strtotime('-24 hours'));
 
         $activities = $wpdb->get_results($wpdb->prepare(
             "SELECT a.*, n.page_url, n.page_id, u.ID as user_id
@@ -2265,7 +2316,7 @@ class PageNotes {
         }
 
         if (empty($page_title) && !empty($parent_note->page_url)) {
-            $parsed = parse_url($parent_note->page_url);
+            $parsed = wp_parse_url($parent_note->page_url);
             if (isset($parsed['path'])) {
                 $path = trim($parsed['path'], '/');
                 $page_title = $path ? ucwords(str_replace(['-', '_', '/'], ' ', $path)) : 'Home';
@@ -2384,7 +2435,7 @@ class PageNotes {
 
             // Extract from URL path
             if (empty($title) && !empty($page_data['page_url'])) {
-                $parsed = parse_url($page_data['page_url']);
+                $parsed = wp_parse_url($page_data['page_url']);
                 if (isset($parsed['path'])) {
                     $path = trim($parsed['path'], '/');
                     $title = $path ? ucwords(str_replace(['-', '_', '/'], ' ', $path)) : 'Home';
@@ -2730,7 +2781,7 @@ class PageNotes {
         $notes_table = $wpdb->prefix . 'page_notes';
 
         // Get activity from last 24 hours
-        $yesterday = date('Y-m-d H:i:s', strtotime('-24 hours'));
+        $yesterday = wp_date('Y-m-d H:i:s', strtotime('-24 hours'));
 
         $activities = $wpdb->get_results($wpdb->prepare(
             "SELECT a.*, n.page_url, n.page_id, u.ID as user_id
@@ -2791,7 +2842,7 @@ class PageNotes {
 
             // Extract from URL path
             if (empty($title) && !empty($page_data['page_url'])) {
-                $parsed = parse_url($page_data['page_url']);
+                $parsed = wp_parse_url($page_data['page_url']);
                 if (isset($parsed['path'])) {
                     $path = trim($parsed['path'], '/');
                     $title = $path ? ucwords(str_replace(['-', '_', '/'], ' ', $path)) : 'Home';
