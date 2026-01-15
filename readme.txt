@@ -76,7 +76,7 @@ By default, notes and settings are preserved in the database. You can opt in to 
 
 = Can I export my notes? =
 
-Notes are stored in custom database tables created using your site’s `{$wpdb->prefix}` (for example: `{$wpdb->prefix}page_notes`, `{$wpdb->prefix}page_notes_activity`, `{$wpdb->prefix}page_notes_completions`). You can export them using standard database export tools.
+Yes. Go to **Settings > Page Notes** and use the Export Notes section. You can export all notes to CSV (for spreadsheets) or JSON (for developers/backup). The export includes all note data, assignments, completion tracking, and timestamps.
 
 = Does this plugin work with page builders? =
 

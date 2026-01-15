@@ -963,4 +963,4 @@ This section documents compliance with WordPress.org plugin directory requiremen
 ---
 
 _Last Updated: January 2026_
-_Plugin Version: 1.2.1_
+_Plugin Version: 1.4.0_

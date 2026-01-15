@@ -3,6 +3,8 @@
  * Plugin Name: Page Notes
  * Description: Add collaborative notes to any element on your WordPress pages.
  * Version: 1.4.0
+ * Requires at least: 5.0
+ * Requires PHP: 7.4
  * Author: Murray Chapman
  * Author URI: https://muzkore.com
  * License: GPL v2 or later
@@ -60,6 +62,7 @@ class PageNotes {
         add_action('wp_ajax_pn_send_notifications', array($this, 'ajax_send_notifications'));
         add_action('wp_ajax_pn_check_pending_notifications', array($this, 'ajax_check_pending_notifications'));
         add_action('wp_ajax_pn_send_activity_digest', array($this, 'ajax_send_activity_digest'));
+        add_action('wp_ajax_pn_export_notes', array($this, 'ajax_export_notes'));
 
         // Cron job for auto-sending notifications
         add_filter('cron_schedules', array($this, 'add_cron_schedules'));
@@ -1404,6 +1407,39 @@ class PageNotes {
             </form>
 
             <div class="card" style="margin-top: 20px;">
+                <h2>Export Notes</h2>
+                <p>Export all notes from your site. This includes all note data, assignments, status, and completion information.</p>
+
+                <table class="form-table">
+                    <tr>
+                        <th scope="row">Export Format</th>
+                        <td>
+                            <select name="page_notes_export_format" id="page_notes_export_format" style="width: 200px;">
+                                <option value="csv">CSV (Spreadsheet)</option>
+                                <option value="json">JSON (Developer/Backup)</option>
+                            </select>
+                            <p class="description">
+                                <strong>CSV:</strong> Best for Excel, Google Sheets, or data analysis<br>
+                                <strong>JSON:</strong> Best for developers, integrations, or backup/restore
+                            </p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row">Export Data</th>
+                        <td>
+                            <button type="button" id="export-notes-btn" class="button button-primary">
+                                Export All Notes
+                            </button>
+                            <span id="export-result" style="margin-left: 10px;"></span>
+                            <p class="description">
+                                Exports all notes with complete information including assignments, status, completion data, and timestamps.
+                            </p>
+                        </td>
+                    </tr>
+                </table>
+            </div>
+
+            <div class="card" style="margin-top: 20px;">
                 <h2>Plugin Information</h2>
                 <table class="form-table">
                     <tr>
@@ -1468,6 +1504,62 @@ class PageNotes {
                         digestResult.textContent = '✗ Error: ' + error.message;
                         digestResult.style.color = '#dc3232';
                     });
+                });
+            }
+
+            // Export notes button handler
+            const exportBtn = document.getElementById('export-notes-btn');
+            const exportResult = document.getElementById('export-result');
+            const exportFormat = document.getElementById('page_notes_export_format');
+
+            if (exportBtn) {
+                exportBtn.addEventListener('click', function(e) {
+                    e.preventDefault();
+
+                    // Disable button and show loading
+                    exportBtn.disabled = true;
+                    exportBtn.textContent = 'Exporting...';
+                    exportResult.textContent = '';
+
+                    const format = exportFormat.value;
+
+                    // Create form and submit to trigger download
+                    const form = document.createElement('form');
+                    form.method = 'POST';
+                    form.action = ajaxurl;
+                    form.style.display = 'none';
+
+                    const actionInput = document.createElement('input');
+                    actionInput.name = 'action';
+                    actionInput.value = 'pn_export_notes';
+                    form.appendChild(actionInput);
+
+                    const formatInput = document.createElement('input');
+                    formatInput.name = 'format';
+                    formatInput.value = format;
+                    form.appendChild(formatInput);
+
+                    const nonceInput = document.createElement('input');
+                    nonceInput.name = 'nonce';
+                    nonceInput.value = '<?php echo esc_js(wp_create_nonce('page_notes_nonce')); ?>';
+                    form.appendChild(nonceInput);
+
+                    document.body.appendChild(form);
+                    form.submit();
+                    document.body.removeChild(form);
+
+                    // Reset button after a short delay
+                    setTimeout(function() {
+                        exportBtn.disabled = false;
+                        exportBtn.textContent = 'Export All Notes';
+                        exportResult.textContent = '✓ Export started';
+                        exportResult.style.color = '#46b450';
+
+                        // Clear message after 5 seconds
+                        setTimeout(function() {
+                            exportResult.textContent = '';
+                        }, 5000);
+                    }, 1000);
                 });
             }
         });
@@ -2114,6 +2206,252 @@ class PageNotes {
         } else {
             wp_send_json_error('Failed to send activity digest email. Check your WordPress email configuration.');
         }
+    }
+
+    /**
+     * AJAX: Export notes to CSV or JSON
+     */
+    public function ajax_export_notes() {
+        check_ajax_referer('page_notes_nonce', 'nonce');
+
+        // Verify user has permission (admins only)
+        if (!current_user_can('manage_options')) {
+            wp_die(esc_html__('Insufficient permissions', 'page-notes'));
+            return;
+        }
+
+        global $wpdb;
+        $table_name = $wpdb->prefix . 'page_notes';
+        $completion_table = $wpdb->prefix . 'page_notes_completions';
+
+        // Get format from request
+        $format = isset($_POST['format']) ? sanitize_text_field(wp_unslash($_POST['format'])) : 'csv';
+
+        // Query all notes with full details
+        $notes = $wpdb->get_results(
+            "SELECT
+                n.id,
+                n.page_id,
+                n.page_url,
+                n.element_selector,
+                n.content,
+                n.status,
+                n.parent_id,
+                n.created_at,
+                n.updated_at,
+                creator.display_name as created_by_name,
+                creator.user_login as created_by_username,
+                creator.ID as created_by_id,
+                assignee.display_name as assigned_to_name,
+                assignee.user_login as assigned_to_username,
+                assignee.ID as assigned_to_id,
+                completer.display_name as completed_by_name,
+                completer.user_login as completed_by_username,
+                completer.ID as completed_by_id,
+                c.created_at as completed_at
+            FROM $table_name n
+            LEFT JOIN {$wpdb->users} creator ON n.user_id = creator.ID
+            LEFT JOIN {$wpdb->users} assignee ON n.assigned_to = assignee.ID
+            LEFT JOIN $completion_table c ON n.id = c.note_id
+            LEFT JOIN {$wpdb->users} completer ON c.completed_by = completer.ID
+            ORDER BY n.page_url, n.created_at ASC"
+        );
+
+        if ($format === 'json') {
+            $this->export_notes_json($notes);
+        } else {
+            $this->export_notes_csv($notes);
+        }
+
+        exit;
+    }
+
+    /**
+     * Export notes as CSV
+     */
+    private function export_notes_csv($notes) {
+        $filename = 'page-notes-export-' . gmdate('Y-m-d-His') . '.csv';
+
+        // Set headers for download
+        header('Content-Type: text/csv; charset=utf-8');
+        header('Content-Disposition: attachment; filename=' . $filename);
+        header('Pragma: no-cache');
+        header('Expires: 0');
+
+        // Open output stream
+        $output = fopen('php://output', 'w');
+
+        // Add BOM for UTF-8
+        fprintf($output, chr(0xEF).chr(0xBB).chr(0xBF));
+
+        // Write CSV header
+        fputcsv($output, array(
+            'Note ID',
+            'Page Title',
+            'Page URL',
+            'Element',
+            'Content',
+            'Status',
+            'Created By',
+            'Assigned To',
+            'Created Date',
+            'Updated Date',
+            'Completed By',
+            'Completed Date',
+            'Parent ID',
+            'Is Reply'
+        ));
+
+        // Write data rows
+        foreach ($notes as $note) {
+            // Get page title
+            $page_title = '';
+            if ($note->page_id > 0) {
+                $post = get_post($note->page_id);
+                if ($post) {
+                    $page_title = $post->post_title;
+                }
+            }
+            if (empty($page_title)) {
+                $page_title = $note->page_url;
+            }
+
+            // Build display names using the helper function
+            $created_by = '';
+            if (!empty($note->created_by_id)) {
+                $created_by = $this->get_user_display_name($note->created_by_id);
+            }
+
+            $assigned_to = '';
+            if (!empty($note->assigned_to_id)) {
+                $assigned_to = $this->get_user_display_name($note->assigned_to_id);
+            }
+
+            $completed_by = '';
+            if (!empty($note->completed_by_id)) {
+                $completed_by = $this->get_user_display_name($note->completed_by_id);
+            }
+
+            // Format element selector
+            $element = $note->element_selector;
+            if (empty($element) || $element === 'body' || $element === 'html') {
+                $element = 'General Note';
+            }
+
+            // Strip @mentions from content for display
+            $content = preg_replace('/@[\w-]+\s*/', '', $note->content);
+            $content = trim($content);
+
+            fputcsv($output, array(
+                $note->id,
+                $page_title,
+                $note->page_url,
+                $element,
+                $content,
+                $note->status,
+                $created_by,
+                $assigned_to,
+                $note->created_at,
+                $note->updated_at,
+                $completed_by,
+                $note->completed_at ? $note->completed_at : '',
+                $note->parent_id,
+                $note->parent_id > 0 ? 'Yes' : 'No'
+            ));
+        }
+
+        fclose($output);
+    }
+
+    /**
+     * Export notes as JSON
+     */
+    private function export_notes_json($notes) {
+        $filename = 'page-notes-export-' . gmdate('Y-m-d-His') . '.json';
+
+        // Set headers for download
+        header('Content-Type: application/json; charset=utf-8');
+        header('Content-Disposition: attachment; filename=' . $filename);
+        header('Pragma: no-cache');
+        header('Expires: 0');
+
+        // Get current user info
+        $current_user = wp_get_current_user();
+        $exported_by = $this->get_user_display_name($current_user->ID);
+
+        // Build export data structure
+        $export_data = array(
+            'export_info' => array(
+                'exported_at' => gmdate('Y-m-d\TH:i:s\Z'),
+                'exported_by' => $exported_by,
+                'total_notes' => count($notes),
+                'plugin_version' => PAGE_NOTES_VERSION,
+                'wordpress_version' => get_bloginfo('version'),
+                'site_url' => get_site_url()
+            ),
+            'notes' => array()
+        );
+
+        // Process each note
+        foreach ($notes as $note) {
+            // Get page title
+            $page_title = '';
+            if ($note->page_id > 0) {
+                $post = get_post($note->page_id);
+                if ($post) {
+                    $page_title = $post->post_title;
+                }
+            }
+
+            // Build display names
+            $created_by = array(
+                'id' => $note->created_by_id,
+                'name' => $this->get_user_display_name($note->created_by_id),
+                'username' => $note->created_by_username
+            );
+
+            $assigned_to = null;
+            if (!empty($note->assigned_to_id)) {
+                $assigned_to = array(
+                    'id' => $note->assigned_to_id,
+                    'name' => $this->get_user_display_name($note->assigned_to_id),
+                    'username' => $note->assigned_to_username
+                );
+            }
+
+            $completed_by = null;
+            if (!empty($note->completed_by_id)) {
+                $completed_by = array(
+                    'id' => $note->completed_by_id,
+                    'name' => $this->get_user_display_name($note->completed_by_id),
+                    'username' => $note->completed_by_username
+                );
+            }
+
+            $note_data = array(
+                'id' => intval($note->id),
+                'page' => array(
+                    'id' => intval($note->page_id),
+                    'title' => $page_title,
+                    'url' => $note->page_url
+                ),
+                'element_selector' => $note->element_selector,
+                'content' => $note->content,
+                'status' => $note->status,
+                'created_by' => $created_by,
+                'assigned_to' => $assigned_to,
+                'created_at' => $note->created_at,
+                'updated_at' => $note->updated_at,
+                'completed_by' => $completed_by,
+                'completed_at' => $note->completed_at,
+                'parent_id' => intval($note->parent_id),
+                'is_reply' => $note->parent_id > 0
+            );
+
+            $export_data['notes'][] = $note_data;
+        }
+
+        echo wp_json_encode($export_data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     }
 
     /**
