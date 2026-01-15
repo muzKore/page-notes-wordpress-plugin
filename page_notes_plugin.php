@@ -1139,7 +1139,7 @@ class PageNotes {
     public function render_settings_page() {
         // Check user capabilities
         if (!current_user_can('manage_options')) {
-            wp_die(__('You do not have sufficient permissions to access this page.', 'page-notes'));
+            wp_die(esc_html__('You do not have sufficient permissions to access this page.', 'page-notes'));
         }
 
         // Get all WordPress roles
