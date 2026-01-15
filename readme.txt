@@ -56,11 +56,23 @@ The documentation includes a clear list of stored data and practical steps for r
 == Installation ==
 
 1. Upload the `page-notes` folder to `/wp-content/plugins/`
-2. Activate the plugin through the ‘Plugins’ menu in WordPress
-3. Go to **Settings > Page Notes** to configure access and notification options
-4. Visit any page while logged in and click the **Page Notes** button in the admin bar
+2. Activate the plugin through the 'Plugins' menu in WordPress
+3. Create a user with the "Page Notes Reviewer" role (or use existing Editor/Admin)
+4. Send them login details - they're ready to leave notes!
+
+**That's it!** No configuration needed for basic use. Visit any page, click **Page Notes** in the admin bar, and start adding feedback.
+
+**Optional:** Go to **Settings > Page Notes** to configure email notifications, @mentions, activity digests, and other team features. These are all optional - the plugin works great without them for simple developer-client workflows.
 
 == Frequently Asked Questions ==
+
+= Do I need to configure settings to use the plugin? =
+
+No! Install, activate, and you're ready to go. All settings are optional extras for larger teams. For a simple developer-client setup, just create a reviewer account and start leaving notes. The only "must do" is ensure users have the right role to access notes.
+
+= Do I need to use @mentions or email notifications? =
+
+No. These are optional features. Without @mentions, notes are general feedback anyone can see. Without email notifications, people just check notes manually when they log in. Perfect for small teams or solo developers working with clients.
 
 = Who can see the notes? =
 

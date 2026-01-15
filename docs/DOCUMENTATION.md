@@ -11,16 +11,17 @@ Page Notes is a WordPress plugin that enables team collaboration by allowing use
 ## Table of Contents
 
 1. [Core Features](#core-features)
-2. [Getting Started](#getting-started)
-3. [Creating and Managing Notes](#creating-and-managing-notes)
-4. [Advanced Features](#advanced-features)
-5. [Settings Configuration](#settings-configuration)
-6. [Email Notifications](#email-notifications)
-7. [User Permissions](#user-permissions)
-8. [Best Practices](#best-practices)
-9. [Privacy and Data Handling](#privacy-and-data-handling)
-10. [Data Retention and Removal](#data-retention-and-removal)
-11. [WordPress.org Readiness Checklist](#wordpressorg-readiness-checklist)
+2. [Quick Start: Up and Running in 2 Minutes](#quick-start-up-and-running-in-2-minutes)
+3. [Getting Started (Detailed)](#getting-started-detailed)
+4. [Creating and Managing Notes](#creating-and-managing-notes)
+5. [Advanced Features](#advanced-features)
+6. [Settings Configuration](#settings-configuration)
+7. [Email Notifications](#email-notifications)
+8. [User Permissions](#user-permissions)
+9. [Best Practices](#best-practices)
+10. [Privacy and Data Handling](#privacy-and-data-handling)
+11. [Data Retention and Removal](#data-retention-and-removal)
+12. [WordPress.org Readiness Checklist](#wordpressorg-readiness-checklist)
 
 ---
 
@@ -75,7 +76,47 @@ Page Notes is a WordPress plugin that enables team collaboration by allowing use
 
 ---
 
-## Getting Started
+## Quick Start: Up and Running in 2 Minutes
+
+**The Simple Setup (Perfect for Developer + Client):**
+
+1. **Install and activate** the plugin
+2. **Create a user** with the "Page Notes Reviewer" role (or use an existing Editor/Admin)
+3. **Send them the login details**
+4. **They're ready!** They can now leave notes on any page
+
+**That's it.** No configuration needed. No settings to adjust. Just start leaving notes.
+
+### How to Use (The Basics)
+
+**For the person leaving notes (client/reviewer):**
+1. Log in to WordPress
+2. Visit any page on the site
+3. Click the **Page Notes** button in the top admin bar
+4. Click **Add Note**, then click any element on the page
+5. Type your feedback and click **Save Note**
+6. Optional: Click **Send Notifications** when done to notify the developer
+
+**For the developer:**
+- Just log in and you'll see all the notes on each page
+- No notification needed - you can see them whenever you visit the page
+- Mark notes as "Completed" when you've addressed them
+
+### Optional Features (Use Only If You Need Them)
+
+**@Mentions** - Type `@username` to assign a note to someone specific
+- Without @mentions: Notes are general feedback anyone can see
+- With @mentions: Notes are assigned to that person
+
+**Email Notifications** - Can be enabled in Settings > Page Notes
+- Default: OFF (people check notes manually)
+- If enabled: People get emailed when mentioned or when someone replies
+
+**All the other features** (reminders, digests, activity logs, etc.) are optional extras for larger teams. Ignore them if you don't need them.
+
+---
+
+## Getting Started (Detailed)
 
 ### Enabling Page Notes
 
@@ -83,7 +124,7 @@ Page Notes is a WordPress plugin that enables team collaboration by allowing use
 
 1. Go to Settings > Page Notes
 2. Configure which user roles can use Page Notes
-3. Select a Notes Manager (receives digest emails)
+3. Select a Notes Manager (receives digest emails) - Optional
 4. Save settings
 
 **For Individual Users:**
