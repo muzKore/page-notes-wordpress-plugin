@@ -560,6 +560,7 @@ View note: [link]
 
 - Custom role designed for client access
 - Can view the site and add notes
+- Can manually send notifications for their own notes
 - **Cannot** access WordPress admin dashboard
 - **Cannot** edit posts, pages, or any content
 - **Cannot** install plugins or modify site settings
@@ -799,7 +800,7 @@ Email notifications may include:
 - Timestamps
 - Direct links back to your WordPress site
 
-**Important:** All emails are sent using WordPress's built-in `wp_mail()` function. No third-party email services are used unless you have configured them separately in WordPress.
+**Important:** All emails are sent using WordPress's built-in `wp_mail()` function, which respects any SMTP plugins or mail configuration on your site.
 
 ### Third-Party Data Sharing
 
@@ -866,6 +867,15 @@ When you uninstall Page Notes with the default settings:
 - Plugin settings and user preferences are retained
 - Scheduled cron jobs are cleared
 - You can reinstall the plugin later and all data will be available
+
+**Reviewer Role Handling (Always Applies):**
+
+Regardless of the data preservation setting, when the plugin is uninstalled:
+
+- Users with the "Page Notes Reviewer" role are **automatically reassigned to Subscriber**
+- The custom "Page Notes Reviewer" role is removed from WordPress
+- This prevents users from being assigned to a non-existent role
+- If you want to delete reviewer accounts entirely, do so manually before uninstalling
 
 **Opt-In Full Removal:**
 
@@ -936,7 +946,7 @@ This section documents compliance with WordPress.org plugin directory requiremen
   - Instant emails: **Disabled by default** (admin must enable)
   - Activity digest: **Disabled by default** (admin must enable)
   - Task reminders: **Disabled by default** (admin must enable globally, users must opt-in via profile)
-- **WordPress mail function:** All emails use `wp_mail()` (no external email services)
+- **WordPress mail function:** All emails use `wp_mail()` (respects SMTP plugins and site mail configuration)
 - **User control:** Clear settings to disable each notification type
 - **No spam risk:** All automated email sending is opt-in, and admins can manually trigger digests/batches on-demand
 - **Reminder behaviour:** Only sends to users who have incomplete tasks assigned to them (via @mentions) AND have opted in
@@ -970,23 +980,26 @@ This section documents compliance with WordPress.org plugin directory requiremen
 - **Data preserved by default:** Uninstalling does NOT delete data unless explicitly opted in
 - **Clear user control:** Admin setting to enable full data removal on uninstall
 - **Proper cleanup:** Cron jobs always cleared, even when preserving data
+- **Reviewer role cleanup:** Users with the "Page Notes Reviewer" role are reassigned to Subscriber (prevents orphaned role assignments)
 - **Transparent behaviour:** Documentation clearly explains deactivate vs uninstall
 
 ### Permissions Model
 
 **Access is controlled by WordPress capabilities:**
 
-- **View/Create Notes:** `edit_posts` capability + individual user access setting
+- **View/Create Notes:** `edit_posts` or `use_page_notes` capability + individual user access setting
 - **Manage Settings:** `manage_options` capability (administrators only)
-- **Send Notifications:** `manage_options` or Notes Manager user
+- **Send All Notifications:** `manage_options` or Notes Manager user
+- **Send Own Notifications:** Any user with `use_page_notes` capability (reviewers can send notifications for notes they created)
 - **Delete Own Notes:** User must be the note creator
 - **View All Notes:** Notes Manager role OR administrator
 
 **Role-based defaults:**
-- Administrators: Full access (always enabled)
-- Editors: Access if enabled in settings
-- Authors/Contributors: Access if enabled in settings (have `edit_posts` capability)
-- Subscribers: Cannot use Page Notes (lack `edit_posts` capability)
+- Administrators: Full access (always enabled), can send all notifications
+- Editors: Access if enabled in settings, can send own notifications
+- Authors/Contributors: Access if enabled in settings (have `edit_posts` capability), can send own notifications
+- Page Notes Reviewers: Full notes access, can send own notifications
+- Subscribers: Cannot use Page Notes (lack `edit_posts` and `use_page_notes` capability)
 
 ### Browser Compatibility
 

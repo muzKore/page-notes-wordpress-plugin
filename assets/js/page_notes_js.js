@@ -24,10 +24,295 @@
         expandedReplies: new Set(),  // Track which reply sections are expanded (collapsed by default)
 
         /**
+         * FORMAT DATE TIME
+         * Formats a date string as "DD/MM/YYYY H:MMAM/PM"
+         */
+        formatDateTime: function(dateString) {
+            const date = new Date(dateString);
+            const day = String(date.getDate()).padStart(2, '0');
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const year = date.getFullYear();
+            let hours = date.getHours();
+            const minutes = String(date.getMinutes()).padStart(2, '0');
+            const ampm = hours >= 12 ? 'PM' : 'AM';
+            hours = hours % 12;
+            hours = hours ? hours : 12; // 0 should be 12
+            return `${day}/${month}/${year} ${hours}:${minutes}${ampm}`;
+        },
+
+        /**
+         * GENERATE ELEMENT FINGERPRINT
+         * Creates a comprehensive fingerprint of an element for recovery purposes
+         */
+        generateFingerprint: function(element) {
+            // Get text content (first 200 chars, trimmed)
+            const textContent = (element.textContent || '').trim().substring(0, 200);
+
+            // Simple hash of full text content for exact matching
+            const fullText = (element.textContent || '').trim();
+            const textHash = this.simpleHash(fullText);
+
+            // Get stable classes (filter out dynamic ones)
+            const classes = element.className && typeof element.className === 'string'
+                ? element.className.split(' ')
+                    .filter(c => c.trim())
+                    .filter(c => !(/^(is-|has-|active|hover|focus|selected|current|js-)/.test(c)))
+                    .filter(c => !/\d{5,}/.test(c)) // Filter classes with long numbers
+                    .slice(0, 5)
+                : [];
+
+            // Get key data attributes
+            const attributes = {};
+            Array.from(element.attributes).forEach(attr => {
+                if (attr.name.startsWith('data-') && !attr.name.includes('page-note')) {
+                    attributes[attr.name] = attr.value.substring(0, 100);
+                }
+            });
+
+            // Get sibling context
+            const prevSibling = element.previousElementSibling;
+            const nextSibling = element.nextElementSibling;
+            const siblingBefore = prevSibling ? (prevSibling.textContent || '').trim().substring(0, 100) : null;
+            const siblingAfter = nextSibling ? (nextSibling.textContent || '').trim().substring(0, 100) : null;
+
+            // Get parent info
+            const parent = element.parentElement;
+            const parentInfo = parent ? {
+                tag: parent.tagName.toLowerCase(),
+                id: parent.id || null,
+                classes: parent.className && typeof parent.className === 'string'
+                    ? parent.className.split(' ').filter(c => c.trim()).slice(0, 3)
+                    : []
+            } : null;
+
+            // Get nth-of-type position
+            let nthOfType = 1;
+            if (parent) {
+                const siblings = Array.from(parent.children).filter(el => el.tagName === element.tagName);
+                nthOfType = siblings.indexOf(element) + 1;
+            }
+
+            return {
+                tag: element.tagName.toLowerCase(),
+                text: textContent,
+                textHash: textHash,
+                classes: classes,
+                attributes: attributes,
+                siblingBefore: siblingBefore,
+                siblingAfter: siblingAfter,
+                parentInfo: parentInfo,
+                nthOfType: nthOfType,
+                backupSelectors: this.generateBackupSelectors(element)
+            };
+        },
+
+        /**
+         * SIMPLE HASH
+         * Creates a simple hash of a string for comparison
+         */
+        simpleHash: function(str) {
+            let hash = 0;
+            for (let i = 0; i < str.length; i++) {
+                const char = str.charCodeAt(i);
+                hash = ((hash << 5) - hash) + char;
+                hash = hash & hash; // Convert to 32bit integer
+            }
+            return hash.toString(16);
+        },
+
+        /**
+         * GENERATE BACKUP SELECTORS
+         * Creates multiple selector strategies for redundancy
+         */
+        generateBackupSelectors: function(element) {
+            const selectors = [];
+
+            // Backup 1: nth-child path from body
+            const nthPath = this.buildNthChildPath(element);
+            if (nthPath) {
+                selectors.push(nthPath);
+            }
+
+            // Backup 2: Class-based selector if element has stable classes
+            if (element.className && typeof element.className === 'string') {
+                const stableClasses = element.className.split(' ')
+                    .filter(c => c.trim())
+                    .filter(c => !(/^(is-|has-|active|hover|focus|selected|current|js-)/.test(c)))
+                    .filter(c => !/\d{5,}/.test(c))
+                    .slice(0, 3);
+
+                if (stableClasses.length > 0) {
+                    const classSelector = element.tagName.toLowerCase() + '.' +
+                        stableClasses.map(c => CSS.escape(c)).join('.');
+                    if (this.validateSelector(classSelector, element)) {
+                        selectors.push(classSelector);
+                    }
+                }
+            }
+
+            // Backup 3: Parent ID + child path
+            let parent = element.parentElement;
+            let depth = 0;
+            while (parent && parent !== document.body && depth < 5) {
+                if (parent.id) {
+                    const childPath = this.buildPathFromAncestor(element, parent);
+                    if (childPath) {
+                        const fullSelector = '#' + CSS.escape(parent.id) + ' ' + childPath;
+                        if (this.validateSelector(fullSelector, element)) {
+                            selectors.push(fullSelector);
+                            break;
+                        }
+                    }
+                }
+                parent = parent.parentElement;
+                depth++;
+            }
+
+            return selectors.slice(0, 3); // Keep max 3 backup selectors
+        },
+
+        /**
+         * FIND ELEMENT WITH RECOVERY
+         * Attempts to find an element using selector, then fingerprint recovery
+         */
+        findElementWithRecovery: function(selector, fingerprint) {
+            // First, try the primary selector
+            try {
+                const element = document.querySelector(selector);
+                if (element) {
+                    // Verify fingerprint if available
+                    if (fingerprint && fingerprint.textHash) {
+                        const currentHash = this.simpleHash((element.textContent || '').trim());
+                        if (currentHash === fingerprint.textHash) {
+                            return { element: element, method: 'primary' };
+                        }
+                        // Hash mismatch - element might have changed, but position is same
+                        // Still return it but note the mismatch
+                        if (element.tagName.toLowerCase() === fingerprint.tag) {
+                            return { element: element, method: 'primary-changed' };
+                        }
+                    } else {
+                        return { element: element, method: 'primary' };
+                    }
+                }
+            } catch (e) {
+                // Invalid selector, continue to fallbacks
+            }
+
+            // Try backup selectors from fingerprint
+            if (fingerprint && fingerprint.backupSelectors) {
+                for (let i = 0; i < fingerprint.backupSelectors.length; i++) {
+                    try {
+                        const backupSelector = fingerprint.backupSelectors[i];
+                        const element = document.querySelector(backupSelector);
+                        if (element && element.tagName.toLowerCase() === fingerprint.tag) {
+                            return { element: element, method: 'backup-' + i };
+                        }
+                    } catch (e) {
+                        // Invalid selector, try next
+                    }
+                }
+            }
+
+            // Fallback: Search by fingerprint content
+            if (fingerprint && fingerprint.text) {
+                const found = this.searchByFingerprint(fingerprint);
+                if (found) {
+                    return { element: found, method: 'fingerprint-search' };
+                }
+            }
+
+            return { element: null, method: 'not-found' };
+        },
+
+        /**
+         * SEARCH BY FINGERPRINT
+         * Searches the page for an element matching the fingerprint
+         */
+        searchByFingerprint: function(fingerprint) {
+            if (!fingerprint || !fingerprint.tag) return null;
+
+            // Get all elements of the same tag type
+            const candidates = document.querySelectorAll(fingerprint.tag);
+            let bestMatch = null;
+            let bestScore = 0;
+
+            candidates.forEach(element => {
+                // Skip elements inside the notes panel
+                if (element.closest('.page-notes-panel')) return;
+
+                let score = 0;
+
+                // Check text content similarity
+                const elementText = (element.textContent || '').trim();
+                if (fingerprint.textHash) {
+                    const currentHash = this.simpleHash(elementText);
+                    if (currentHash === fingerprint.textHash) {
+                        score += 100; // Exact match
+                    } else if (fingerprint.text && elementText.includes(fingerprint.text.substring(0, 50))) {
+                        score += 50; // Partial text match
+                    }
+                }
+
+                // Check classes
+                if (fingerprint.classes && fingerprint.classes.length > 0) {
+                    const elementClasses = element.className && typeof element.className === 'string'
+                        ? element.className.split(' ')
+                        : [];
+                    const matchingClasses = fingerprint.classes.filter(c => elementClasses.includes(c));
+                    score += matchingClasses.length * 10;
+                }
+
+                // Check parent context
+                if (fingerprint.parentInfo && element.parentElement) {
+                    const parent = element.parentElement;
+                    if (parent.tagName.toLowerCase() === fingerprint.parentInfo.tag) {
+                        score += 5;
+                    }
+                    if (fingerprint.parentInfo.id && parent.id === fingerprint.parentInfo.id) {
+                        score += 20;
+                    }
+                }
+
+                // Check sibling context
+                if (fingerprint.siblingBefore && element.previousElementSibling) {
+                    const prevText = (element.previousElementSibling.textContent || '').trim().substring(0, 100);
+                    if (prevText === fingerprint.siblingBefore) {
+                        score += 15;
+                    }
+                }
+
+                // Check nth position
+                if (fingerprint.nthOfType && element.parentElement) {
+                    const siblings = Array.from(element.parentElement.children)
+                        .filter(el => el.tagName === element.tagName);
+                    const currentNth = siblings.indexOf(element) + 1;
+                    if (currentNth === fingerprint.nthOfType) {
+                        score += 10;
+                    }
+                }
+
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestMatch = element;
+                }
+            });
+
+            // Only return if we have a reasonable confidence (score > 30)
+            return bestScore > 30 ? bestMatch : null;
+        },
+
+        /**
          * INITIALIZATION
          * This runs when the page loads - it sets everything up
          */
         init: function() {
+            // Check for body class - this is our primary defense against page builder editors
+            // PHP only adds this class on the actual frontend, not in editor contexts
+            if (!document.body.classList.contains('page-notes-enabled')) {
+                return; // Silently exit - we're probably in a page builder editor
+            }
+
             // Validate that pageNotesData exists and has required properties
             if (typeof pageNotesData === 'undefined') {
                 console.error('Page Notes: pageNotesData is not defined. Plugin may not be properly loaded.');
@@ -112,13 +397,116 @@
                 <div class="page-notes-mode-indicator">
                     Click any element to add a note
                 </div>
+
+                <!-- Alert modal for messages -->
+                <div class="page-notes-alert-overlay">
+                    <div class="page-notes-alert">
+                        <div class="page-notes-alert-message"></div>
+                        <div class="page-notes-alert-actions">
+                            <button class="note-form-btn note-form-btn-save page-notes-alert-ok">OK</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Confirm modal for confirmations -->
+                <div class="page-notes-confirm-overlay">
+                    <div class="page-notes-alert page-notes-confirm">
+                        <div class="page-notes-alert-message page-notes-confirm-message"></div>
+                        <div class="page-notes-alert-actions">
+                            <button class="note-form-btn note-form-btn-cancel page-notes-confirm-no">Cancel</button>
+                            <button class="note-form-btn note-form-btn-save page-notes-confirm-yes">Delete</button>
+                        </div>
+                    </div>
+                </div>
             `;
-            
+
             // Add the HTML to the page
             // In vanilla JS, we insert HTML like this:
             document.body.insertAdjacentHTML('beforeend', panelHTML);
         },
-        
+
+        /**
+         * SHOW ALERT
+         * Displays a styled modal alert instead of browser alert()
+         */
+        showAlert: function(message, type = 'info') {
+            const overlay = document.querySelector('.page-notes-alert-overlay');
+            const messageEl = document.querySelector('.page-notes-alert-message');
+            const alertBox = document.querySelector('.page-notes-alert');
+
+            // Set the message
+            messageEl.textContent = message;
+
+            // Set type class for styling (success, error, info)
+            alertBox.className = 'page-notes-alert';
+            if (type) {
+                alertBox.classList.add('page-notes-alert-' + type);
+            }
+
+            // Show the overlay
+            overlay.classList.add('active');
+
+            // Focus the OK button for keyboard accessibility
+            const okButton = overlay.querySelector('.page-notes-alert-ok');
+            if (okButton) {
+                okButton.focus();
+            }
+        },
+
+        /**
+         * CLOSE ALERT
+         * Hides the alert modal
+         */
+        closeAlert: function() {
+            const overlay = document.querySelector('.page-notes-alert-overlay');
+            if (overlay) {
+                overlay.classList.remove('active');
+            }
+        },
+
+        /**
+         * SHOW CONFIRM
+         * Displays a styled confirmation dialog with callback
+         */
+        showConfirm: function(message, onConfirm, type = 'error') {
+            const overlay = document.querySelector('.page-notes-confirm-overlay');
+            const messageEl = document.querySelector('.page-notes-confirm-message');
+            const confirmBox = document.querySelector('.page-notes-confirm');
+
+            // Set the message
+            messageEl.textContent = message;
+
+            // Set type class for styling
+            confirmBox.className = 'page-notes-alert page-notes-confirm';
+            if (type) {
+                confirmBox.classList.add('page-notes-alert-' + type);
+            }
+
+            // Store the callback
+            this.confirmCallback = onConfirm;
+
+            // Show the overlay
+            overlay.classList.add('active');
+
+            // Focus the Cancel button (safer default)
+            const cancelButton = overlay.querySelector('.page-notes-confirm-no');
+            if (cancelButton) {
+                cancelButton.focus();
+            }
+        },
+
+        /**
+         * CLOSE CONFIRM
+         * Hides the confirm modal
+         */
+        closeConfirm: function() {
+            const overlay = document.querySelector('.page-notes-confirm-overlay');
+            if (overlay) {
+                overlay.classList.remove('active');
+            }
+            this.confirmCallback = null;
+        },
+
         /**
          * BIND EVENTS
          * This connects user actions (clicks, etc.) to our functions
@@ -134,6 +522,7 @@
                 toggleButton.addEventListener('click', function(e) {
                     e.preventDefault(); // Stop the link from doing its default action
                     self.togglePanel();
+                    this.blur(); // Remove focus to prevent stuck focus styling
                 });
             }
             
@@ -180,7 +569,38 @@
                     }
                 });
             }
-            
+
+            // Alert modal - OK button and overlay click
+            const alertOverlay = document.querySelector('.page-notes-alert-overlay');
+            if (alertOverlay) {
+                alertOverlay.addEventListener('click', function(e) {
+                    // Close if clicking overlay background or OK button
+                    if (e.target.classList.contains('page-notes-alert-overlay') ||
+                        e.target.classList.contains('page-notes-alert-ok')) {
+                        self.closeAlert();
+                    }
+                });
+            }
+
+            // Confirm modal - Yes/No buttons
+            const confirmOverlay = document.querySelector('.page-notes-confirm-overlay');
+            if (confirmOverlay) {
+                confirmOverlay.addEventListener('click', function(e) {
+                    // Cancel button or overlay background click
+                    if (e.target.classList.contains('page-notes-confirm-overlay') ||
+                        e.target.classList.contains('page-notes-confirm-no')) {
+                        self.closeConfirm();
+                    }
+                    // Confirm/Yes button
+                    if (e.target.classList.contains('page-notes-confirm-yes')) {
+                        if (self.confirmCallback) {
+                            self.confirmCallback();
+                        }
+                        self.closeConfirm();
+                    }
+                });
+            }
+
             // EVENT DELEGATION: Instead of adding listeners to each dynamic element,
             // we listen on the document and check what was clicked.
             // This works even for elements created after page load!
@@ -246,21 +666,42 @@
             });
             
             // Mouse hover events for highlighting elements
-            document.addEventListener('mouseenter', function(e) {
-                if (e.target && e.target.classList && e.target.classList.contains('note-item')) {
-                    const selector = e.target.getAttribute('data-selector');
-                    self.highlightElement(selector);
+            // Use mouseover/mouseout with closest() to handle hovering over child elements
+            document.addEventListener('mouseover', function(e) {
+                const noteItem = e.target.closest('.note-item');
+                if (noteItem && noteItem.closest('.page-notes-panel')) {
+                    const selector = noteItem.getAttribute('data-selector');
+                    const noteId = noteItem.getAttribute('data-note-id');
+                    if (selector) {
+                        self.highlightElement(selector, noteId);
+                    }
                 }
-            }, true); // 'true' means capture phase (catches events earlier)
-            
-            document.addEventListener('mouseleave', function(e) {
-                if (e.target && e.target.classList && e.target.classList.contains('note-item')) {
-                    self.removeHighlight();
+            }, true);
+
+            document.addEventListener('mouseout', function(e) {
+                const noteItem = e.target.closest('.note-item');
+                if (noteItem && noteItem.closest('.page-notes-panel')) {
+                    // Only remove highlight if we're actually leaving the note-item
+                    const relatedTarget = e.relatedTarget;
+                    if (!relatedTarget || !noteItem.contains(relatedTarget)) {
+                        self.removeHighlight();
+                    }
                 }
             }, true);
             
-            // Check if we should auto-open notes (from URL parameter)
-            if (window.location.search.includes('notes=active')) {
+            // Check if we should auto-open notes (from URL parameter or localStorage)
+            let shouldOpen = window.location.search.includes('notes=active');
+
+            // Also check localStorage for persisted state
+            if (!shouldOpen) {
+                try {
+                    shouldOpen = localStorage.getItem('pageNotesActive') === '1';
+                } catch (e) {
+                    // localStorage might be unavailable
+                }
+            }
+
+            if (shouldOpen) {
                 this.togglePanel();
             }
 
@@ -377,6 +818,13 @@
             const panel = document.querySelector('.page-notes-panel');
             const adminBarButton = document.querySelector('#wp-admin-bar-page-notes-toggle');
 
+            // Save state to localStorage for persistence across refreshes
+            try {
+                localStorage.setItem('pageNotesActive', this.isActive ? '1' : '0');
+            } catch (e) {
+                // localStorage might be unavailable in some contexts
+            }
+
             // classList.toggle() adds the class if it's not there, removes it if it is
             if (this.isActive) {
                 // Make sure panel is visible (in case it was hidden when positioned)
@@ -409,33 +857,58 @@
         enableNoteMode: function() {
             this.isNoteMode = true;
             const self = this;
-            
+
             // Show the indicator
             document.querySelector('.page-notes-mode-indicator').classList.add('active');
-            
+
             // Create the click handler function
             // We save it so we can remove it later
             this.noteClickHandler = function(e) {
                 // Only respond if we're in note mode
                 if (!self.isNoteMode) return;
-                
-                // Don't capture clicks on the panel itself or admin bar
+
+                // Don't capture clicks on the panel itself, admin bar, or overlays
                 const panel = e.target.closest('.page-notes-panel');
                 const adminBar = e.target.closest('#wpadminbar');
                 const overlay = e.target.closest('.note-form-overlay');
-                
-                if (panel || adminBar || overlay) return;
-                
+                const alertOverlay = e.target.closest('.page-notes-alert-overlay');
+                const confirmOverlay = e.target.closest('.page-notes-confirm-overlay');
+
+                if (panel || adminBar || overlay || alertOverlay || confirmOverlay) return;
+
                 e.preventDefault(); // Don't let the click do its normal thing
                 e.stopPropagation(); // Don't let the click bubble up to parent elements
-                
+
                 self.selectedElement = e.target; // Save which element was clicked
                 self.openNoteForm(); // Show the form to create a note
             };
-            
+
+            // Create hover highlight handlers for note mode
+            this.noteHoverHandler = function(e) {
+                if (!self.isNoteMode) return;
+
+                // Don't highlight panel, admin bar, or overlay elements
+                const panel = e.target.closest('.page-notes-panel');
+                const adminBar = e.target.closest('#wpadminbar');
+                const overlay = e.target.closest('.note-form-overlay');
+                const alertOverlay = e.target.closest('.page-notes-alert-overlay');
+                const confirmOverlay = e.target.closest('.page-notes-confirm-overlay');
+                const modeIndicator = e.target.closest('.page-notes-mode-indicator');
+
+                if (panel || adminBar || overlay || alertOverlay || confirmOverlay || modeIndicator) return;
+
+                e.target.classList.add('page-notes-hover-highlight');
+            };
+
+            this.noteHoverOutHandler = function(e) {
+                e.target.classList.remove('page-notes-hover-highlight');
+            };
+
             // Add the click handler to the document
             // We use capture phase (true) to catch the event before other handlers
             document.addEventListener('click', this.noteClickHandler, true);
+            document.addEventListener('mouseover', this.noteHoverHandler, true);
+            document.addEventListener('mouseout', this.noteHoverOutHandler, true);
         },
         
         /**
@@ -444,15 +917,30 @@
          */
         disableNoteMode: function() {
             this.isNoteMode = false;
-            
+
             // Hide the indicator
             document.querySelector('.page-notes-mode-indicator').classList.remove('active');
-            
+
             // Remove the click handler
             if (this.noteClickHandler) {
                 document.removeEventListener('click', this.noteClickHandler, true);
                 this.noteClickHandler = null;
             }
+
+            // Remove the hover handlers
+            if (this.noteHoverHandler) {
+                document.removeEventListener('mouseover', this.noteHoverHandler, true);
+                this.noteHoverHandler = null;
+            }
+            if (this.noteHoverOutHandler) {
+                document.removeEventListener('mouseout', this.noteHoverOutHandler, true);
+                this.noteHoverOutHandler = null;
+            }
+
+            // Clean up any lingering hover highlights
+            document.querySelectorAll('.page-notes-hover-highlight').forEach(el => {
+                el.classList.remove('page-notes-hover-highlight');
+            });
         },
         
         /**
@@ -490,7 +978,11 @@
             textarea.dispatchEvent(new Event('input'));
 
             overlay.classList.add('active');
-            textarea.focus(); // Put cursor in the textarea
+
+            // Focus textarea after animation starts (slight delay ensures it works)
+            setTimeout(() => {
+                textarea.focus();
+            }, 50);
         },
 
         /**
@@ -660,26 +1152,30 @@
 
             // Validate that user entered something
             if (!content) {
-                alert('Please enter a note');
+                this.showAlert('Please enter a note', 'error');
                 return;
             }
 
             // If this is a reply, we don't need an element selector
             let selector = '';
+            let fingerprint = null;
             if (this.replyToNoteId) {
-                // For replies, use the parent note's selector
+                // For replies, use the parent note's selector and fingerprint
                 const parentNote = this.currentNotes.find(n => n.id == this.replyToNoteId);
                 if (parentNote) {
                     selector = parentNote.element_selector;
+                    fingerprint = parentNote.element_fingerprint;
                 }
             } else {
                 // Make sure an element was selected for new notes
                 if (!this.selectedElement) {
-                    alert('No element selected');
+                    this.showAlert('No element selected', 'error');
                     return;
                 }
                 // Generate a unique CSS selector for the element
                 selector = this.generateSelector(this.selectedElement);
+                // Generate fingerprint for recovery purposes
+                fingerprint = this.generateFingerprint(this.selectedElement);
             }
 
             // Prepare the data to send to server
@@ -691,6 +1187,10 @@
             formData.append('page_url', pageNotesData.currentPageUrl);
             formData.append('element_selector', selector);
             formData.append('content', content);
+            // Add fingerprint as JSON string
+            if (fingerprint) {
+                formData.append('element_fingerprint', JSON.stringify(fingerprint));
+            }
 
             // Add parent_id if this is a reply
             if (this.replyToNoteId) {
@@ -713,6 +1213,12 @@
             .then(data => {
                 // This runs when we get the response
                 if (data.success) {
+                    // If this was a reply, expand the parent's replies section so user can see it
+                    const parentIdToExpand = this.replyToNoteId;
+                    if (parentIdToExpand) {
+                        this.expandedReplies.add(parseInt(parentIdToExpand));
+                    }
+
                     // Note saved successfully!
                     this.closeNoteForm();
 
@@ -729,13 +1235,13 @@
                 } else {
                     // Something went wrong - show the error message from server
                     const errorMsg = data.data || 'Unknown error occurred';
-                    alert('Error saving note: ' + errorMsg);
+                    this.showAlert('Error saving note: ' + errorMsg, 'error');
                 }
             })
             .catch(error => {
                 // This runs if there's a network error
                 console.error('Error:', error);
-                alert('Failed to save note. Please check your connection and try again.');
+                this.showAlert('Failed to save note. Please check your connection and try again.', 'error');
             });
         },
         
@@ -784,11 +1290,78 @@
                 return classSelector;
             }
 
-            // Strategy 7: LAST RESORT - Add our own permanent data attribute
-            // This is the most stable option as it persists with the element
-            const uniqueId = 'pn-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
-            element.setAttribute('data-page-note-id', uniqueId);
-            return `[data-page-note-id="${uniqueId}"]`;
+            // Strategy 7: LAST RESORT - Build nth-child path from body
+            // This is fragile (breaks if page structure changes) but works across sessions
+            const nthChildPath = this.buildNthChildPath(element);
+            if (nthChildPath && this.validateSelector(nthChildPath, element)) {
+                return nthChildPath;
+            }
+
+            // If all else fails, return a basic tag + nth-child from parent
+            return this.buildBasicSelector(element);
+        },
+
+        /**
+         * Build an nth-child path from the body to the element
+         */
+        buildNthChildPath: function(element) {
+            const path = [];
+            let current = element;
+
+            while (current && current !== document.body && current !== document.documentElement) {
+                let selector = current.tagName.toLowerCase();
+
+                // Add nth-child position among siblings of same type
+                const parent = current.parentElement;
+                if (parent) {
+                    const siblings = Array.from(parent.children).filter(
+                        el => el.tagName === current.tagName
+                    );
+                    if (siblings.length > 1) {
+                        const index = siblings.indexOf(current) + 1;
+                        selector += `:nth-of-type(${index})`;
+                    }
+                }
+
+                path.unshift(selector);
+                current = current.parentElement;
+
+                // Limit path depth to avoid overly long selectors
+                if (path.length > 10) break;
+            }
+
+            return path.length > 0 ? 'body > ' + path.join(' > ') : null;
+        },
+
+        /**
+         * Build a basic selector as absolute last resort
+         */
+        buildBasicSelector: function(element) {
+            const tag = element.tagName.toLowerCase();
+            const parent = element.parentElement;
+
+            if (!parent) return tag;
+
+            const siblings = Array.from(parent.children).filter(
+                el => el.tagName === element.tagName
+            );
+
+            if (siblings.length > 1) {
+                const index = siblings.indexOf(element) + 1;
+                // Build path from parent too for more specificity
+                let parentSelector = parent.tagName.toLowerCase();
+                if (parent.id) {
+                    parentSelector = '#' + CSS.escape(parent.id);
+                } else if (parent.className && typeof parent.className === 'string') {
+                    const classes = parent.className.split(' ').filter(c => c.trim()).slice(0, 2);
+                    if (classes.length > 0) {
+                        parentSelector += '.' + classes.map(c => CSS.escape(c)).join('.');
+                    }
+                }
+                return `${parentSelector} > ${tag}:nth-of-type(${index})`;
+            }
+
+            return tag;
         },
 
         /**
@@ -1117,6 +1690,12 @@
          * Returns a Promise so we can chain actions after loading
          */
         loadCurrentPageNotes: function() {
+            // Show loading state
+            const notesList = document.querySelector('.notes-list');
+            if (notesList) {
+                notesList.innerHTML = '<div class="loading-state"><div class="loading-spinner"></div><div class="loading-text">Loading notes...</div></div>';
+            }
+
             const formData = new FormData();
             formData.append('action', 'pn_get_notes');
             formData.append('nonce', pageNotesData.nonce);
@@ -1137,6 +1716,9 @@
             })
             .catch(error => {
                 console.error('Error loading notes:', error);
+                if (notesList) {
+                    notesList.innerHTML = '<div class="error-state">Failed to load notes. Please try again.</div>';
+                }
             });
         },
         
@@ -1148,7 +1730,7 @@
             const notesList = document.querySelector('.notes-list');
 
             if (notes.length === 0) {
-                notesList.innerHTML = '<div class="empty-state"><div class="empty-state-icon">📝</div><div class="empty-state-text">No notes on this page yet.<br>Click any element to add a note!</div></div>';
+                notesList.innerHTML = '<div class="empty-state"><div class="empty-state-icon"><img src="' + pageNotesData.pluginUrl + 'assets/images/empty-notes.svg" alt="No notes" /></div><div class="empty-state-text">No notes on this page yet.<br>Click any element to add a note!</div></div>';
                 return;
             }
 
@@ -1182,7 +1764,15 @@
         renderNote: function(note, allNotes) {
             const completedClass = note.status === 'completed' ? 'completed' : '';
             const contextOnlyClass = note.is_context_only ? 'context-only' : '';
-            const date = new Date(note.created_at).toLocaleDateString();
+            const date = this.formatDateTime(note.created_at);
+
+            // Check if the element can be found on the page
+            const elementResult = this.findElementWithRecovery(note.element_selector, note.element_fingerprint);
+            const elementNotFound = !elementResult.element;
+            const brokenLinkClass = elementNotFound ? 'element-not-found' : '';
+            const brokenLinkIndicator = elementNotFound
+                ? `<div class="note-broken-link" title="The linked element could not be found on this page. It may have been moved or deleted."><img src="${pageNotesData.pluginUrl}assets/images/broken-link.svg" alt="Element not found" /></div>`
+                : '';
 
             // Show assignment badge if note is assigned
             const assignedBadge = note.assigned_to && note.assigned_to_name
@@ -1221,7 +1811,7 @@
                 if (isExpanded) {
                     repliesHtml = '<div class="note-replies">';
                     replies.forEach(reply => {
-                        const replyDate = new Date(reply.created_at).toLocaleDateString();
+                        const replyDate = this.formatDateTime(reply.created_at);
                         const replyStripped = this.stripMentions(reply.content);
                         const replyContent = this.formatQuotedContent(replyStripped);
                         const replyCompletedClass = reply.status === 'completed' ? 'completed' : '';
@@ -1242,8 +1832,9 @@
                             ? '<button class="note-btn note-btn-delete" disabled title="Cannot delete - this note has replies">Delete</button>'
                             : '<button class="note-btn note-btn-delete">Delete</button>';
 
-                        // Check if current user owns this reply
+                        // Check if current user owns this reply or is Notes Manager
                         const replyIsOwnedByCurrentUser = reply.user_id == pageNotesData.currentUserId;
+                        const canDeleteReply = replyIsOwnedByCurrentUser || pageNotesData.isManager;
 
                         // Context-only replies: hide action buttons, add badge
                         const replyContextOnlyClass = reply.is_context_only ? 'context-only' : '';
@@ -1251,11 +1842,11 @@
                             ? `<div class="note-context-badge" title="This note is shown for context only">Context</div>`
                             : '';
 
-                        // Build action buttons - only show Edit and Delete for note owner
+                        // Build action buttons - Edit for owner only, Delete for owner or manager
                         let replyActions = '';
                         if (!reply.is_context_only) {
                             const editBtn = replyIsOwnedByCurrentUser ? '<button class="note-btn note-btn-edit">Edit</button>' : '';
-                            const deleteButton = replyIsOwnedByCurrentUser ? replyDeleteBtn : '';
+                            const deleteButton = canDeleteReply ? replyDeleteBtn : '';
 
                             replyActions = `
                                 <div class="note-actions">
@@ -1290,14 +1881,15 @@
                 ? '<button class="note-btn note-btn-delete" disabled title="Cannot delete - this note has replies">Delete</button>'
                 : '<button class="note-btn note-btn-delete">Delete</button>';
 
-            // Check if current user owns this note
+            // Check if current user owns this note or is Notes Manager
             const noteIsOwnedByCurrentUser = note.user_id == pageNotesData.currentUserId;
+            const canDeleteNote = noteIsOwnedByCurrentUser || pageNotesData.isManager;
 
-            // Build action buttons - only show Edit and Delete for note owner
+            // Build action buttons - Edit for owner only, Delete for owner or manager
             let noteActions = '';
             if (!note.is_context_only) {
                 const editBtn = noteIsOwnedByCurrentUser ? '<button class="note-btn note-btn-edit">Edit</button>' : '';
-                const deleteButton = noteIsOwnedByCurrentUser ? deleteBtn : '';
+                const deleteButton = canDeleteNote ? deleteBtn : '';
 
                 noteActions = `
                     <div class="note-actions">
@@ -1310,7 +1902,7 @@
             }
 
             return `
-                <div class="note-item ${completedClass} ${contextOnlyClass}" data-note-id="${note.id}" data-selector="${note.element_selector}">
+                <div class="note-item ${completedClass} ${contextOnlyClass} ${brokenLinkClass}" data-note-id="${note.id}" data-selector="${note.element_selector}">
                     <div class="note-header">
                         <span class="note-author">${note.user_name}</span>
                         <span class="note-date">${date}</span>
@@ -1318,7 +1910,10 @@
                     </div>
                     <div class="note-content">${displayContent}</div>
                     ${assignedBadge}
-                    ${noteActions}
+                    <div class="note-footer">
+                        ${noteActions}
+                        ${brokenLinkIndicator}
+                    </div>
                     ${replyToggle}
                     ${repliesHtml}
                 </div>
@@ -1346,20 +1941,32 @@
         /**
          * HIGHLIGHT ELEMENT
          * Highlights an element on the page and scrolls to it
+         * Uses fingerprint recovery if selector fails
          */
-        highlightElement: function(selector) {
+        highlightElement: function(selector, noteId) {
             try {
-                // querySelector finds the first matching element
-                const element = document.querySelector(selector);
+                // Try to find the note to get fingerprint for recovery
+                let fingerprint = null;
+                if (noteId) {
+                    const note = this.currentNotes.find(n => n.id == noteId);
+                    if (note && note.element_fingerprint) {
+                        fingerprint = note.element_fingerprint;
+                    }
+                }
+
+                // Use recovery system to find element
+                const result = this.findElementWithRecovery(selector, fingerprint);
+                const element = result.element;
+
                 if (element) {
                     // Add highlight class
                     element.classList.add('page-notes-highlight');
-                    
+
                     // Scroll to the element smoothly
                     // getBoundingClientRect() tells us where the element is on the page
                     const rect = element.getBoundingClientRect();
                     const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
-                    
+
                     window.scrollTo({
                         top: rect.top + scrollTop - 100,
                         behavior: 'smooth' // Makes it scroll smoothly instead of jumping
@@ -1424,6 +2031,11 @@
             // Update character counter
             textarea.dispatchEvent(new Event('input'));
 
+            // Focus textarea after animation starts
+            setTimeout(() => {
+                textarea.focus();
+            }, 50);
+
             // Change save button behavior to update instead of create
             // First, remove the old event listener by cloning the button
             const newSaveButton = saveButton.cloneNode(true);
@@ -1443,7 +2055,7 @@
             const content = document.querySelector('.note-form-textarea').value.trim();
             
             if (!content) {
-                alert('Please enter a note');
+                this.showAlert('Please enter a note', 'error');
                 return;
             }
             
@@ -1482,30 +2094,52 @@
                     });
                 } else {
                     const errorMsg = data.data || 'Unknown error occurred';
-                    alert('Error updating note: ' + errorMsg);
+                    this.showAlert('Error updating note: ' + errorMsg, 'error');
                 }
             })
             .catch(error => {
                 console.error('Error:', error);
-                alert('Failed to update note. Please check your connection and try again.');
+                this.showAlert('Failed to update note. Please check your connection and try again.', 'error');
             });
         },
         
         /**
          * COMPLETE NOTE
          * Marks a note as completed (or reopens it)
+         * Uses optimistic UI update for instant feedback
          */
         completeNote: function(noteId) {
             const note = this.currentNotes.find(n => n.id == noteId);
-            const newStatus = note.status === 'completed' ? 'open' : 'completed';
-            
+            if (!note) {
+                console.error('Note not found:', noteId);
+                this.showAlert('Could not find note. Please refresh and try again.', 'error');
+                return;
+            }
+
+            const oldStatus = note.status;
+            const newStatus = oldStatus === 'completed' ? 'open' : 'completed';
+
+            // Optimistic UI update - change immediately for instant feedback
+            note.status = newStatus;
+            const noteElement = document.querySelector(`.note-item[data-note-id="${noteId}"]`);
+            if (noteElement) {
+                const button = noteElement.querySelector('.note-btn-complete');
+                if (newStatus === 'completed') {
+                    noteElement.classList.add('completed');
+                    if (button) button.textContent = 'Reopen';
+                } else {
+                    noteElement.classList.remove('completed');
+                    if (button) button.textContent = 'Complete';
+                }
+            }
+
             const formData = new FormData();
             formData.append('action', 'pn_update_note');
             formData.append('nonce', pageNotesData.nonce);
             formData.append('note_id', noteId);
             formData.append('status', newStatus);
-            formData.append('content', note.content); // Must include content even if not changing
-            
+            // Don't send content - this allows assignees to complete notes they don't own
+
             fetch(pageNotesData.ajaxUrl, {
                 method: 'POST',
                 body: formData,
@@ -1514,12 +2148,39 @@
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
-                    this.loadCurrentPageNotes();
-                    this.loadPagesWithNotes(); // Update the pages list to reflect new counts
+                    // Update pages list in background (non-blocking)
+                    this.loadPagesWithNotes();
+                } else {
+                    // Revert optimistic update on failure
+                    note.status = oldStatus;
+                    if (noteElement) {
+                        const button = noteElement.querySelector('.note-btn-complete');
+                        if (oldStatus === 'completed') {
+                            noteElement.classList.add('completed');
+                            if (button) button.textContent = 'Reopen';
+                        } else {
+                            noteElement.classList.remove('completed');
+                            if (button) button.textContent = 'Complete';
+                        }
+                    }
+                    this.showAlert('Failed to update note status: ' + (data.data || 'Unknown error'), 'error');
                 }
             })
             .catch(error => {
+                // Revert optimistic update on error
+                note.status = oldStatus;
+                if (noteElement) {
+                    const button = noteElement.querySelector('.note-btn-complete');
+                    if (oldStatus === 'completed') {
+                        noteElement.classList.add('completed');
+                        if (button) button.textContent = 'Reopen';
+                    } else {
+                        noteElement.classList.remove('completed');
+                        if (button) button.textContent = 'Complete';
+                    }
+                }
                 console.error('Error:', error);
+                this.showAlert('Failed to update note. Please try again.', 'error');
             });
         },
         
@@ -1528,39 +2189,39 @@
          * Removes a note permanently
          */
         deleteNote: function(noteId) {
-            // confirm() shows a dialog and returns true/false
-            if (!confirm('Are you sure you want to delete this note?')) {
-                return;
-            }
+            const self = this;
 
-            const formData = new FormData();
-            formData.append('action', 'pn_delete_note');
-            formData.append('nonce', pageNotesData.nonce);
-            formData.append('note_id', noteId);
+            // Show styled confirm dialog
+            this.showConfirm('Are you sure you want to delete this note?', function() {
+                const formData = new FormData();
+                formData.append('action', 'pn_delete_note');
+                formData.append('nonce', pageNotesData.nonce);
+                formData.append('note_id', noteId);
 
-            fetch(pageNotesData.ajaxUrl, {
-                method: 'POST',
-                body: formData,
-                credentials: 'same-origin'
-            })
-            .then(response => {
-                if (!response.ok) {
-                    throw new Error('Network response was not ok: ' + response.status);
-                }
-                return response.json();
-            })
-            .then(data => {
-                if (data.success) {
-                    this.loadCurrentPageNotes();
-                    this.loadPagesWithNotes();
-                } else {
-                    const errorMsg = data.data || 'Unknown error occurred';
-                    alert('Error deleting note: ' + errorMsg);
-                }
-            })
-            .catch(error => {
-                console.error('Error:', error);
-                alert('Failed to delete note. Please check your connection and try again.');
+                fetch(pageNotesData.ajaxUrl, {
+                    method: 'POST',
+                    body: formData,
+                    credentials: 'same-origin'
+                })
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('Network response was not ok: ' + response.status);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    if (data.success) {
+                        self.loadCurrentPageNotes();
+                        self.loadPagesWithNotes();
+                    } else {
+                        const errorMsg = data.data || 'Unknown error occurred';
+                        self.showAlert('Error deleting note: ' + errorMsg, 'error');
+                    }
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    self.showAlert('Failed to delete note. Please check your connection and try again.', 'error');
+                });
             });
         },
 
@@ -1726,8 +2387,10 @@
             let html = '';
 
             users.forEach(function(user, index) {
-                // Display format: "Display Name (username)"
-                const displayText = user.display_name ? `${user.display_name} (@${user.username})` : `@${user.username}`;
+                // Show display name with username so user knows what will be inserted
+                const displayText = user.display_name
+                    ? `${user.display_name} (@${user.username})`
+                    : `@${user.username}`;
 
                 html += `
                     <div class="mention-item" data-username="${user.username}" data-index="${index}">
@@ -1880,8 +2543,12 @@
             .then(data => {
                 if (data.success && data.data.has_pending) {
                     button.style.display = '';
+                    // Show count on button
+                    const count = data.data.count || 0;
+                    button.textContent = '📧 Send Notifications (' + count + ')';
                 } else {
                     button.style.display = 'none';
+                    button.textContent = '📧 Send Notifications';
                 }
             })
             .catch(error => {
@@ -1919,7 +2586,7 @@
             .then(data => {
                 if (data.success) {
                     // Show success message
-                    alert(data.data.message);
+                    this.showAlert(data.data.message, 'success');
 
                     // Re-enable and update button visibility
                     if (button) {
@@ -1930,7 +2597,7 @@
                     // Update button visibility after sending
                     self.updateNotificationButtonVisibility();
                 } else {
-                    alert('Error sending notifications: ' + (data.data || 'Unknown error'));
+                    this.showAlert('Error sending notifications: ' + (data.data || 'Unknown error'), 'error');
                     if (button) {
                         button.disabled = false;
                         button.textContent = '📧 Send Notifications';
@@ -1939,7 +2606,7 @@
             })
             .catch(error => {
                 console.error('Error sending notifications:', error);
-                alert('Failed to send notifications. Please try again.');
+                this.showAlert('Failed to send notifications. Please try again.', 'error');
                 if (button) {
                     button.disabled = false;
                     button.textContent = '📧 Send Notifications';

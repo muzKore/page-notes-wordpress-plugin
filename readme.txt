@@ -4,7 +4,7 @@ Tags: notes, collaboration, annotations, team, workflow
 Requires at least: 5.0
 Tested up to: 6.9
 Requires PHP: 7.4
-Stable tag: 1.4.0
+Stable tag: 1.4.3
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -86,13 +86,15 @@ Yes. Notification types can be enabled/disabled in settings. Task reminders also
 
 By default, notes and settings are preserved in the database. You can opt in to full data removal in **Settings > Page Notes > Data Management**. Full removal is permanent.
 
+**Important:** When the plugin is uninstalled, users with the "Page Notes Reviewer" role are automatically reassigned to the Subscriber role. This prevents users from being assigned to a role that no longer exists. If you want to delete reviewer accounts entirely, do so manually before uninstalling.
+
 = Can I export my notes? =
 
 Yes. Go to **Settings > Page Notes** and use the Export Notes section. You can export all notes to CSV (for spreadsheets) or JSON (for developers/backup). The export includes all note data, assignments, completion tracking, and timestamps.
 
 = Does this plugin work with page builders? =
 
-Yes. Page Notes works with any theme or page builder output (Elementor, Gutenberg, etc.) because notes attach to rendered HTML elements on the page.
+Yes. Page Notes works with any theme or page builder output (Elementor, Bricks, Breakdance, Oxygen, Gutenberg, etc.) because notes attach to rendered HTML elements on the page.
 
 = What happens if the page element is removed or changed? =
 
@@ -109,10 +111,36 @@ Notes remain visible in the notes panel even if the original element is no longe
 
 == Changelog ==
 
+= 1.4.3 =
+* Fixed: Critical bug where notes created with fallback selector strategy would not link to elements for other users
+* Fixed: Archive pages (categories, tags, etc.) no longer confuse note associations with posts/pages sharing the same ID
+* Fixed: Complete button now responds instantly (optimistic UI update instead of waiting for server)
+* Added: Element fingerprinting system for robust note-to-element recovery
+* Added: Multiple backup selector strategies stored with each note
+* Added: Content-based element search when selectors fail
+* Added: Broken link indicator shows when a note's target element cannot be found on the page
+* Added: Notes Manager can now delete any note (not just their own)
+* Added: Loading indicator when fetching notes
+* Added: Pages list section now scrolls independently with max height limit
+* Added: Local image assets stored in assets/images folder
+* Improved: Note timestamps now display date and time (e.g., "21/01/2026 7:34PM") instead of date only
+
+= 1.4.2 =
+* Internal development build
+
+= 1.4.1 =
+* Added: Send Notifications button now shows pending count, e.g. "Send Notifications (3)"
+* Added: Setting to allow any user to complete unassigned notes
+* Fixed: Page Notes now hidden in page builder editors (Bricks, Elementor, Oxygen, Breakdance, Beaver Builder, Divi, WPBakery, Brizy, Thrive)
+* Fixed: Notification recipient count was incorrectly inflated when sending multiple notifications to the same person
+* Fixed: Hover highlight and scroll-to-element now works for all notes on the same element
+* Fixed: Complete button not working on notes and replies
+* Fixed: Assignees can now mark notes assigned to them as complete
+
 = 1.4.0 =
 * Rewritten: Complete element selector generation system for maximum stability
 * Added: WordPress Block Editor (Gutenberg) support - notes survive block reordering
-* Added: Page builder support (Elementor, Beaver Builder, Divi, WPBakery)
+* Added: Page builder support (Elementor, Bricks, Breakdance, Oxygen, Beaver Builder, Divi, WPBakery)
 * Improved: Intelligent selector fallback system with 7 strategies
 * Improved: Parent ID + relative path strategy avoids fragile nth-child selectors
 * Added: Permanent data attribute fallback for dynamic content
@@ -183,7 +211,7 @@ Page Notes does NOT:
 * Share data with third parties
 * Set tracking cookies
 
-Emails (if enabled) are sent using WordPress `wp_mail()`.
+Emails (if enabled) are sent using WordPress `wp_mail()`, which respects any SMTP plugins or mail configuration on your site.
 
 To support privacy requests and data deletion, administrators can:
 

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Page Notes
  * Description: Add collaborative notes to any element on your WordPress pages.
- * Version: 1.4.0
+ * Version: 1.4.3
  * Requires at least: 5.0
  * Requires PHP: 7.4
  * Author: Murray Chapman
@@ -17,7 +17,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Define plugin constants
-define('PAGE_NOTES_VERSION', '1.4.0');
+define('PAGE_NOTES_VERSION', '1.4.3');
 define('PAGE_NOTES_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('PAGE_NOTES_PLUGIN_URL', plugin_dir_url(__FILE__));
 
@@ -42,6 +42,9 @@ class PageNotes {
         add_action('admin_bar_menu', array($this, 'add_admin_bar_button'), 100);
         add_action('wp_enqueue_scripts', array($this, 'enqueue_assets'));
 
+        // Add body class for frontend detection (page builders won't have this)
+        add_filter('body_class', array($this, 'add_frontend_body_class'));
+
         // Admin settings page
         add_action('admin_menu', array($this, 'add_settings_page'));
         add_action('admin_init', array($this, 'register_settings'));
@@ -63,6 +66,7 @@ class PageNotes {
         add_action('wp_ajax_pn_check_pending_notifications', array($this, 'ajax_check_pending_notifications'));
         add_action('wp_ajax_pn_send_activity_digest', array($this, 'ajax_send_activity_digest'));
         add_action('wp_ajax_pn_export_notes', array($this, 'ajax_export_notes'));
+        add_action('wp_ajax_pn_cleanup_orphaned_notes', array($this, 'ajax_cleanup_orphaned_notes'));
 
         // Cron job for auto-sending notifications
         add_filter('cron_schedules', array($this, 'add_cron_schedules'));
@@ -70,6 +74,9 @@ class PageNotes {
         add_action('page_notes_send_reminders', array($this, 'cron_send_reminders'));
         add_action('page_notes_send_activity_digest', array($this, 'cron_send_activity_digest'));
         add_action('admin_init', array($this, 'schedule_cron_if_needed'));
+
+        // Cleanup notes when posts are trashed (not just permanently deleted)
+        add_action('trashed_post', array($this, 'delete_notes_for_post'));
     }
     
     /**
@@ -85,6 +92,7 @@ class PageNotes {
             page_id bigint(20) NOT NULL,
             page_url varchar(500) NOT NULL,
             element_selector text NOT NULL,
+            element_fingerprint text DEFAULT NULL,
             content text NOT NULL,
             user_id bigint(20) NOT NULL,
             assigned_to bigint(20) DEFAULT NULL,
@@ -178,6 +186,47 @@ class PageNotes {
     }
 
     /**
+     * Delete all notes associated with a post when it is permanently deleted
+     *
+     * @param int $post_id The ID of the post being deleted
+     */
+    public function delete_notes_for_post($post_id) {
+        global $wpdb;
+        $table_name = $wpdb->prefix . 'page_notes';
+        $activity_table = $wpdb->prefix . 'page_notes_activity';
+        $completion_table = $wpdb->prefix . 'page_notes_completions';
+
+        // Get all note IDs for this post (needed for cleaning up related tables)
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+        $note_ids = $wpdb->get_col($wpdb->prepare(
+            "SELECT id FROM $table_name WHERE page_id = %d",
+            $post_id
+        ));
+
+        if (!empty($note_ids)) {
+            $ids_placeholder = implode(',', array_fill(0, count($note_ids), '%d'));
+
+            // Delete activity logs for these notes
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare
+            $wpdb->query($wpdb->prepare(
+                "DELETE FROM $activity_table WHERE note_id IN ($ids_placeholder)",
+                ...$note_ids
+            ));
+
+            // Delete completion records for these notes
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare
+            $wpdb->query($wpdb->prepare(
+                "DELETE FROM $completion_table WHERE note_id IN ($ids_placeholder)",
+                ...$note_ids
+            ));
+        }
+
+        // Delete all notes for this post
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+        $wpdb->delete($table_name, array('page_id' => $post_id), array('%d'));
+    }
+
+    /**
      * Create custom 'Reviewer' role for clients
      * Reviewers can view the site and add notes, but cannot edit content
      */
@@ -216,18 +265,137 @@ class PageNotes {
     }
 
     /**
+     * Check if we're in a page builder editor
+     * Uses both specific builder detection and generic editor detection methods
+     */
+    private function is_page_builder_editor() {
+        // phpcs:disable WordPress.Security.NonceVerification.Recommended -- Read-only detection of editor mode
+
+        // Generic detection: check for common editor/preview/iframe parameters
+        $editor_params = array(
+            'preview',
+            'preview_id',
+            'preview_nonce',
+            'iframe',
+            'builder',
+            'edit',
+            'editor',
+            'customizer',
+            'customize_changeset_uuid',
+        );
+        foreach ($editor_params as $param) {
+            if (isset($_GET[$param])) {
+                return true;
+            }
+        }
+
+        // Generic detection: check if loaded in an iframe via X-Frame headers or referer from wp-admin
+        if (isset($_SERVER['HTTP_SEC_FETCH_DEST']) && $_SERVER['HTTP_SEC_FETCH_DEST'] === 'iframe') {
+            return true;
+        }
+
+        // Bricks Builder
+        if (isset($_GET['bricks']) && $_GET['bricks'] === 'run') {
+            return true;
+        }
+
+        // Elementor
+        if (isset($_GET['elementor-preview']) || (isset($_GET['action']) && $_GET['action'] === 'elementor')) {
+            return true;
+        }
+
+        // Oxygen Builder
+        if (isset($_GET['ct_builder']) || isset($_GET['oxygen_iframe'])) {
+            return true;
+        }
+
+        // Breakdance
+        if (isset($_GET['breakdance']) || isset($_GET['breakdance_iframe'])) {
+            return true;
+        }
+
+        // Beaver Builder
+        if (isset($_GET['fl_builder'])) {
+            return true;
+        }
+
+        // Divi Builder
+        if (isset($_GET['et_fb']) || isset($_GET['PageSpeed'])) {
+            return true;
+        }
+
+        // WPBakery (Visual Composer)
+        if (isset($_GET['vc_editable']) || isset($_GET['vc_action'])) {
+            return true;
+        }
+
+        // Gutenberg/Block Editor iframe preview
+        if (isset($_GET['_wp-find-template']) || isset($_GET['wp_theme_preview'])) {
+            return true;
+        }
+
+        // Brizy Builder
+        if (isset($_GET['brizy-edit']) || isset($_GET['brizy-edit-iframe'])) {
+            return true;
+        }
+
+        // Thrive Architect
+        if (isset($_GET['tve']) && $_GET['tve'] === 'true') {
+            return true;
+        }
+
+        // Zion Builder
+        if (isset($_GET['zionbuilder-preview']) || isset($_GET['zion_builder_active'])) {
+            return true;
+        }
+
+        // Spectra (formerly Starter Templates)
+        if (isset($_GET['starter-templates'])) {
+            return true;
+        }
+
+        // GenerateBlocks / GeneratePress
+        if (isset($_GET['gb-preview'])) {
+            return true;
+        }
+
+        // phpcs:enable WordPress.Security.NonceVerification.Recommended
+
+        return false;
+    }
+
+    /**
      * Initialize plugin
      */
     public function init() {
         // Future: Add any initialisation code here
     }
-    
+
+    /**
+     * Add body class for frontend detection
+     * Page builders typically don't output this class, so JS can check for it
+     */
+    public function add_frontend_body_class($classes) {
+        // Don't add class in admin or page builder editors
+        if (is_admin() || $this->is_page_builder_editor()) {
+            return $classes;
+        }
+
+        // Only add class for users who can use page notes and have it enabled
+        if (!$this->can_use_page_notes() || !$this->is_page_notes_enabled_for_user()) {
+            return $classes;
+        }
+
+        $classes[] = 'page-notes-enabled';
+        return $classes;
+    }
+
     /**
      * Add button to admin bar
      */
     public function add_admin_bar_button($wp_admin_bar) {
-        // Don't show in admin dashboard - only on public-facing pages
-        if (is_admin()) {
+        // Don't show in admin dashboard or page builder editors
+        if (is_admin() || $this->is_page_builder_editor()) {
             return;
         }
 
@@ -257,8 +425,8 @@ class PageNotes {
      * Enqueue CSS and JavaScript
      */
     public function enqueue_assets() {
-        // Don't load in admin dashboard - only on public-facing pages
-        if (is_admin()) {
+        // Don't load in admin dashboard or page builder editors
+        if (is_admin() || $this->is_page_builder_editor()) {
             return;
         }
 
@@ -289,15 +457,70 @@ class PageNotes {
             true
         );
         
+        // Check if current user is Notes Manager
+        $manager_user_id = get_option('page_notes_manager_user_id', '');
+        $is_manager = !empty($manager_user_id) && get_current_user_id() == $manager_user_id;
+
+        // Determine current page ID and URL
+        // Archives, search results, and other non-singular pages need special handling
+        // to avoid confusion with posts/pages that share IDs with term IDs
+        $current_page_id = 0;
+        $current_page_url = '';
+
+        if (is_singular()) {
+            // Single post, page, or custom post type
+            $current_page_id = get_queried_object_id();
+            $current_page_url = get_permalink();
+        } elseif (is_home() && !is_front_page()) {
+            // Blog index page (not front page)
+            $page_for_posts = get_option('page_for_posts');
+            if ($page_for_posts) {
+                $current_page_id = intval($page_for_posts);
+                $current_page_url = get_permalink($page_for_posts);
+            } else {
+                $current_page_id = 0;
+                $current_page_url = home_url('/');
+            }
+        } elseif (is_front_page()) {
+            // Front page (static or default)
+            $page_on_front = get_option('page_on_front');
+            if ($page_on_front) {
+                $current_page_id = intval($page_on_front);
+            } else {
+                $current_page_id = 0;
+            }
+            $current_page_url = home_url('/');
+        } else {
+            // Archives, search, 404, etc. - use 0 for ID and actual URL
+            // This prevents ID collision with posts/pages
+            $current_page_id = 0;
+            // Get the actual current URL
+            global $wp;
+            if (isset($wp->request) && !empty($wp->request)) {
+                $current_page_url = home_url($wp->request);
+                $current_page_url = trailingslashit($current_page_url);
+            } else {
+                // Fallback to home URL
+                $current_page_url = home_url('/');
+            }
+        }
+
+        // Ensure we always have a valid URL
+        if (empty($current_page_url)) {
+            $current_page_url = home_url('/');
+        }
+
         // Pass data to JavaScript
         wp_localize_script('page-notes-script', 'pageNotesData', array(
             'ajaxUrl' => admin_url('admin-ajax.php'),
             'nonce' => wp_create_nonce('page_notes_nonce'),
-            'currentPageId' => get_queried_object_id(),
-            'currentPageUrl' => get_permalink(),
+            'currentPageId' => $current_page_id,
+            'currentPageUrl' => $current_page_url,
             'currentUserId' => get_current_user_id(),
             'currentUserName' => wp_get_current_user()->display_name,
-            'characterLimit' => intval(get_option('page_notes_character_limit', '150'))
+            'characterLimit' => intval(get_option('page_notes_character_limit', '150')),
+            'pluginUrl' => PAGE_NOTES_PLUGIN_URL,
+            'isManager' => $is_manager
         ));
     }
     
@@ -326,7 +549,7 @@ class PageNotes {
         $is_manager = !empty($manager_user_id) && $current_user_id == $manager_user_id;
 
         // Query by both page_id AND page_url to catch notes that might have been stored with different IDs
-        // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Table name is safe, constructed from $wpdb->prefix
+        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Table name is safe, constructed from $wpdb->prefix
         $notes = $wpdb->get_results($wpdb->prepare(
             "SELECT n.*,
                 u.display_name as user_name,
@@ -387,6 +610,8 @@ class PageNotes {
                 // Build better display names using first/last names with fallback
                 $note->user_name = esc_html($note->user_name);
                 $note->element_selector = esc_attr($note->element_selector);
+                // Fingerprint is JSON - decode it for the frontend
+                $note->element_fingerprint = $note->element_fingerprint ? json_decode($note->element_fingerprint, true) : null;
                 $note->assigned_to_username = esc_html($note->assigned_to_username);
 
                 // Build assigned_to_name from first/last name or display name or username
@@ -431,6 +656,15 @@ class PageNotes {
         $content = trim(wp_kses_post(wp_unslash($_POST['content'])));
         $element_selector = sanitize_text_field(wp_unslash($_POST['element_selector']));
         $page_url = isset($_POST['page_url']) ? sanitize_text_field(wp_unslash($_POST['page_url'])) : '';
+        $element_fingerprint = isset($_POST['element_fingerprint']) ? wp_unslash($_POST['element_fingerprint']) : null;
+
+        // Validate fingerprint is valid JSON if provided
+        if ($element_fingerprint) {
+            $decoded = json_decode($element_fingerprint, true);
+            if (json_last_error() !== JSON_ERROR_NONE) {
+                $element_fingerprint = null; // Invalid JSON, ignore it
+            }
+        }
 
         // Validate page_id is not negative (0 is valid for some pages like blog index)
         if ($page_id < 0) {
@@ -474,6 +708,7 @@ class PageNotes {
             'page_id' => $page_id,
             'page_url' => $page_url,
             'element_selector' => $element_selector,
+            'element_fingerprint' => $element_fingerprint,
             'content' => $content,
             'user_id' => get_current_user_id(),
             'assigned_to' => $assigned_to,
@@ -495,6 +730,7 @@ class PageNotes {
             $parent_id = isset($_POST['parent_id']) ? intval($_POST['parent_id']) : 0;
             if ($instant_email === '1' && $parent_id > 0) {
                 // This is a reply - notify the parent note author
+                // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name uses $wpdb->prefix (safe)
                 $parent_note = $wpdb->get_row($wpdb->prepare(
                     "SELECT n.*, creator.user_email, creator.ID as creator_id
                     FROM $table_name n
@@ -507,6 +743,7 @@ class PageNotes {
                     $parent_author_name = $this->get_user_display_name($parent_note->creator_id);
 
                     // Get the reply note details
+                    // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name uses $wpdb->prefix (safe)
                     $reply_note = $wpdb->get_row($wpdb->prepare(
                         "SELECT n.*, creator.ID as creator_id
                         FROM $table_name n
@@ -541,6 +778,7 @@ class PageNotes {
                     $assignee_name = $this->get_user_display_name($assigned_to);
 
                     // Create a note object for the email
+                    // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name uses $wpdb->prefix (safe)
                     $note_for_email = $wpdb->get_row($wpdb->prepare(
                         "SELECT n.*,
                             creator.ID as creator_id
@@ -566,6 +804,7 @@ class PageNotes {
                     }
                 }
             }
+            // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name uses $wpdb->prefix (safe)
             $note = $wpdb->get_row($wpdb->prepare(
                 "SELECT n.*,
                     u.display_name as user_name,
@@ -583,6 +822,8 @@ class PageNotes {
             if ($note) {
                 $note->user_name = esc_html($note->user_name);
                 $note->element_selector = esc_attr($note->element_selector);
+                // Fingerprint is JSON - decode it for the frontend
+                $note->element_fingerprint = $note->element_fingerprint ? json_decode($note->element_fingerprint, true) : null;
                 $note->assigned_to_username = esc_html($note->assigned_to_username);
 
                 // Build assigned_to_name from first/last name or display name or username
@@ -627,7 +868,8 @@ class PageNotes {
             return;
         }
 
-        // Check if user owns this note
+        // Check if user owns this note or is assigned to it
+        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name uses $wpdb->prefix (safe)
         $note = $wpdb->get_row($wpdb->prepare(
             "SELECT * FROM $table_name WHERE id = %d",
             $note_id
@@ -638,7 +880,18 @@ class PageNotes {
             return;
         }
 
-        if ($note->user_id != get_current_user_id()) {
+        $current_user_id = get_current_user_id();
+        $is_owner = ($note->user_id == $current_user_id);
+        $is_assignee = ($note->assigned_to == $current_user_id);
+        $is_unassigned = empty($note->assigned_to);
+        $anyone_can_complete = get_option('page_notes_anyone_can_complete', 'no') === 'yes';
+
+        // Only owner can edit content, but owner OR assignee can change status
+        // If "anyone can complete" is enabled, any user can complete unassigned notes
+        $is_status_only_update = isset($_POST['status']) && !isset($_POST['content']);
+        $can_complete_unassigned = $is_unassigned && $anyone_can_complete && $is_status_only_update;
+
+        if (!$is_owner && !($is_assignee && $is_status_only_update) && !$can_complete_unassigned) {
             wp_send_json_error('Permission denied');
             return;
         }
@@ -733,6 +986,7 @@ class PageNotes {
         }
 
         // Check if user owns this note
+        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name uses $wpdb->prefix (safe)
         $note = $wpdb->get_row($wpdb->prepare(
             "SELECT * FROM $table_name WHERE id = %d",
             $note_id
@@ -743,7 +997,15 @@ class PageNotes {
             return;
         }
 
-        if ($note->user_id != get_current_user_id()) {
+        // Check if user can delete this note
+        // Note owner can always delete their own notes
+        // Notes Manager can delete any note
+        $current_user_id = get_current_user_id();
+        $manager_user_id = get_option('page_notes_manager_user_id', '');
+        $is_manager = !empty($manager_user_id) && $current_user_id == $manager_user_id;
+        $is_owner = $note->user_id == $current_user_id;
+
+        if (!$is_owner && !$is_manager) {
             wp_send_json_error('Permission denied');
             return;
         }
@@ -816,14 +1078,14 @@ class PageNotes {
                 }
             }
 
-            // Strategy 3: If still no title, extract from URL path (for non-post pages)
+            // Strategy 3: Generate a display title from URL path (but page must have been verified above)
+            // This is only for display purposes - $page_exists is NOT set here
             if (empty($title) && !empty($page->page_url)) {
                 $parsed = wp_parse_url($page->page_url);
                 if (isset($parsed['path'])) {
                     $path = trim($parsed['path'], '/');
                     $title = $path ? ucwords(str_replace(['-', '_', '/'], ' ', $path)) : 'Home';
-                    // Assume custom URLs exist unless proven otherwise
-                    $page_exists = true;
+                    // Note: $page_exists stays false - this page will be marked for deletion
                 }
             }
 
@@ -1119,6 +1381,11 @@ class PageNotes {
             'sanitize_callback' => 'sanitize_text_field',
             'default' => 'disabled'
         ));
+        register_setting('page_notes_settings', 'page_notes_anyone_can_complete', array(
+            'type' => 'string',
+            'sanitize_callback' => 'sanitize_text_field',
+            'default' => 'no'
+        ));
         register_setting('page_notes_settings', 'page_notes_delete_on_uninstall', array(
             'type' => 'string',
             'sanitize_callback' => 'sanitize_text_field',
@@ -1356,6 +1623,21 @@ class PageNotes {
                                 </p>
                             </td>
                         </tr>
+                        <tr>
+                            <th scope="row">Unassigned Note Completion</th>
+                            <td>
+                                <?php
+                                $anyone_can_complete = get_option('page_notes_anyone_can_complete', 'no');
+                                ?>
+                                <label for="page_notes_anyone_can_complete">
+                                    <input type="checkbox" name="page_notes_anyone_can_complete" id="page_notes_anyone_can_complete" value="yes" <?php checked($anyone_can_complete, 'yes'); ?>>
+                                    Allow any user to complete unassigned notes
+                                </label>
+                                <p class="description">
+                                    When enabled, any Page Notes user can mark unassigned notes as complete. When disabled, only the note creator can complete unassigned notes.
+                                </p>
+                            </td>
+                        </tr>
                     </table>
                 </div>
 
@@ -1398,6 +1680,21 @@ class PageNotes {
                                 <p class="description">
                                     When enabled, uninstalling Page Notes will permanently delete all notes, activity logs, settings, and user preferences from your database. This cannot be undone. Leave unchecked (default) to preserve your data if you reinstall the plugin later.
                                 </p>
+                                <p class="description" style="margin-top: 10px; padding: 8px 12px; background: #fff8e5; border-left: 4px solid #ffb900;">
+                                    <strong>Note:</strong> When the plugin is uninstalled, users with the "Page Notes Reviewer" role will be automatically reassigned to the Subscriber role. If you want to delete these users entirely, please do so manually before uninstalling.
+                                </p>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th scope="row">Orphaned Notes</th>
+                            <td>
+                                <p class="description" style="margin-bottom: 10px;">
+                                    Notes attached to pages/posts that have been deleted remain in the database. Use this to clean them up.
+                                </p>
+                                <button type="button" id="cleanup-orphaned-notes-btn" class="button">
+                                    Clean Up Orphaned Notes
+                                </button>
+                                <span id="orphaned-notes-result" style="margin-left: 10px;"></span>
                             </td>
                         </tr>
                     </table>
@@ -1560,6 +1857,62 @@ class PageNotes {
                             exportResult.textContent = '';
                         }, 5000);
                     }, 1000);
+                });
+            }
+
+            // Cleanup orphaned notes button handler
+            const cleanupBtn = document.getElementById('cleanup-orphaned-notes-btn');
+            const cleanupResult = document.getElementById('orphaned-notes-result');
+
+            if (cleanupBtn) {
+                cleanupBtn.addEventListener('click', function(e) {
+                    e.preventDefault();
+
+                    if (!confirm('This will permanently delete all notes attached to pages/posts that no longer exist. Continue?')) {
+                        return;
+                    }
+
+                    // Disable button and show loading
+                    cleanupBtn.disabled = true;
+                    cleanupBtn.textContent = 'Cleaning up...';
+                    cleanupResult.textContent = '';
+                    cleanupResult.className = '';
+
+                    // Send AJAX request
+                    fetch(ajaxurl, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/x-www-form-urlencoded',
+                        },
+                        body: new URLSearchParams({
+                            action: 'pn_cleanup_orphaned_notes',
+                            nonce: '<?php echo esc_js(wp_create_nonce('page_notes_nonce')); ?>'
+                        })
+                    })
+                    .then(response => response.json())
+                    .then(data => {
+                        cleanupBtn.disabled = false;
+                        cleanupBtn.textContent = 'Clean Up Orphaned Notes';
+
+                        if (data.success) {
+                            cleanupResult.textContent = '✓ ' + data.data.message;
+                            cleanupResult.style.color = '#46b450';
+                        } else {
+                            cleanupResult.textContent = '✗ ' + (data.data || 'Failed to clean up');
+                            cleanupResult.style.color = '#dc3232';
+                        }
+
+                        // Clear message after 5 seconds
+                        setTimeout(function() {
+                            cleanupResult.textContent = '';
+                        }, 5000);
+                    })
+                    .catch(error => {
+                        cleanupBtn.disabled = false;
+                        cleanupBtn.textContent = 'Clean Up Orphaned Notes';
+                        cleanupResult.textContent = '✗ Error: ' + error.message;
+                        cleanupResult.style.color = '#dc3232';
+                    });
                 });
             }
         });
@@ -1861,6 +2214,7 @@ class PageNotes {
         $table_name = $wpdb->prefix . 'page_notes';
 
         // Get the note details
+        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name uses $wpdb->prefix (safe)
         $note = $wpdb->get_row($wpdb->prepare(
             "SELECT * FROM $table_name WHERE id = %d",
             $note_id
@@ -2046,13 +2400,21 @@ class PageNotes {
     public function ajax_send_notifications() {
         check_ajax_referer('page_notes_nonce', 'nonce');
 
-        // Verify user has permission (admins and Notes Manager only)
-        if (!current_user_can('manage_options') && get_current_user_id() != get_option('page_notes_manager_user_id', '')) {
+        // Check if user is admin or Notes Manager (can send all notifications)
+        $is_admin_or_manager = current_user_can('manage_options') ||
+            get_current_user_id() == get_option('page_notes_manager_user_id', '');
+
+        // Check if user can send their own notifications (reviewers with use_page_notes)
+        $can_send_own = current_user_can('use_page_notes') && $this->is_page_notes_enabled_for_user();
+
+        if (!$is_admin_or_manager && !$can_send_own) {
             wp_send_json_error('Insufficient permissions');
             return;
         }
 
-        $result = $this->send_pending_notifications();
+        // Admins/managers send all notifications, others send only their own
+        $author_filter = $is_admin_or_manager ? null : get_current_user_id();
+        $result = $this->send_pending_notifications($author_filter);
 
         if ($result['recipients'] > 0) {
             wp_send_json_success(array(
@@ -2091,28 +2453,47 @@ class PageNotes {
         $table_name = $wpdb->prefix . 'page_notes';
         $completion_table = $wpdb->prefix . 'page_notes_completions';
 
+        // Check if user is admin or Notes Manager (sees all notifications)
+        $is_admin_or_manager = current_user_can('manage_options') ||
+            get_current_user_id() == get_option('page_notes_manager_user_id', '');
+
+        // Build author filter for non-admin users (they only see their own pending notifications)
+        $author_filter = '';
+        $completion_author_filter = '';
+        if (!$is_admin_or_manager) {
+            $current_user_id = get_current_user_id();
+            $author_filter = $wpdb->prepare(' AND user_id = %d', $current_user_id);
+            $completion_author_filter = $wpdb->prepare(' AND completed_by = %d', $current_user_id);
+        }
+
         // Count pending assignment notifications
+        // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, PluginCheck.Security.DirectDB.UnescapedDBParameter -- $table_name uses $wpdb->prefix (safe), $author_filter is prepared above
         $assignment_count = $wpdb->get_var(
             "SELECT COUNT(*)
             FROM $table_name
             WHERE assigned_to IS NOT NULL
             AND assigned_to > 0
-            AND notification_sent = 0"
+            AND notification_sent = 0
+            $author_filter"
         );
 
         // Count pending reply notifications
+        // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, PluginCheck.Security.DirectDB.UnescapedDBParameter -- $table_name uses $wpdb->prefix (safe), $author_filter is prepared above
         $reply_count = $wpdb->get_var(
             "SELECT COUNT(*)
             FROM $table_name
             WHERE parent_id > 0
-            AND notification_sent = 0"
+            AND notification_sent = 0
+            $author_filter"
         );
 
         // Count pending completion notifications
+        // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, PluginCheck.Security.DirectDB.UnescapedDBParameter -- $completion_table uses $wpdb->prefix (safe), $completion_author_filter is prepared above
         $completion_count = $wpdb->get_var(
             "SELECT COUNT(*)
             FROM $completion_table
-            WHERE notification_sent = 0"
+            WHERE notification_sent = 0
+            $completion_author_filter"
         );
 
         $total_count = intval($assignment_count) + intval($reply_count) + intval($completion_count);
@@ -2155,6 +2536,7 @@ class PageNotes {
         // Get activity from last 24 hours
         $yesterday = wp_date('Y-m-d H:i:s', strtotime('-24 hours'));
 
+        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name uses $wpdb->prefix (safe)
         $activities = $wpdb->get_results($wpdb->prepare(
             "SELECT a.*, n.page_url, n.page_id, u.ID as user_id
             FROM $activity_table a
@@ -2209,6 +2591,85 @@ class PageNotes {
     }
 
     /**
+     * AJAX: Clean up orphaned notes (notes attached to deleted posts)
+     */
+    public function ajax_cleanup_orphaned_notes() {
+        check_ajax_referer('page_notes_nonce', 'nonce');
+
+        // Verify user has permission (admins only)
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Insufficient permissions');
+            return;
+        }
+
+        global $wpdb;
+        $table_name = $wpdb->prefix . 'page_notes';
+        $activity_table = $wpdb->prefix . 'page_notes_activity';
+        $completion_table = $wpdb->prefix . 'page_notes_completions';
+
+        // Find all unique page_ids in notes table where the post no longer exists at all
+        // (Notes on trashed posts are already deleted by the trashed_post hook)
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+        $orphaned_page_ids = $wpdb->get_col(
+            "SELECT DISTINCT n.page_id
+            FROM $table_name n
+            LEFT JOIN {$wpdb->posts} p ON n.page_id = p.ID
+            WHERE p.ID IS NULL"
+        );
+
+        if (empty($orphaned_page_ids)) {
+            wp_send_json_success(array('message' => 'No orphaned notes found.', 'deleted' => 0));
+            return;
+        }
+
+        $total_deleted = 0;
+
+        foreach ($orphaned_page_ids as $page_id) {
+            // Get note IDs for this orphaned page
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+            $note_ids = $wpdb->get_col($wpdb->prepare(
+                "SELECT id FROM $table_name WHERE page_id = %d",
+                $page_id
+            ));
+
+            if (!empty($note_ids)) {
+                $ids_placeholder = implode(',', array_fill(0, count($note_ids), '%d'));
+
+                // Delete activity logs for these notes
+                // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare
+                $wpdb->query($wpdb->prepare(
+                    "DELETE FROM $activity_table WHERE note_id IN ($ids_placeholder)",
+                    ...$note_ids
+                ));
+
+                // Delete completion records for these notes
+                // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare
+                $wpdb->query($wpdb->prepare(
+                    "DELETE FROM $completion_table WHERE note_id IN ($ids_placeholder)",
+                    ...$note_ids
+                ));
+
+                $total_deleted += count($note_ids);
+            }
+
+            // Delete all notes for this orphaned page
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+            $wpdb->delete($table_name, array('page_id' => $page_id), array('%d'));
+        }
+
+        $page_count = count($orphaned_page_ids);
+        $message = sprintf(
+            'Cleaned up %d note%s from %d deleted page%s.',
+            $total_deleted,
+            $total_deleted === 1 ? '' : 's',
+            $page_count,
+            $page_count === 1 ? '' : 's'
+        );
+
+        wp_send_json_success(array('message' => $message, 'deleted' => $total_deleted));
+    }
+
+    /**
      * AJAX: Export notes to CSV or JSON
      */
     public function ajax_export_notes() {
@@ -2228,6 +2689,7 @@ class PageNotes {
         $format = isset($_POST['format']) ? sanitize_text_field(wp_unslash($_POST['format'])) : 'csv';
 
         // Query all notes with full details
+        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table names ($table_name, $completion_table) use $wpdb->prefix (safe)
         $notes = $wpdb->get_results(
             "SELECT
                 n.id,
@@ -2486,12 +2948,21 @@ class PageNotes {
      * Send pending email notifications
      * Groups notes by recipient and page for a clean email experience
      * Includes both assignment notifications and reply notifications
+     *
+     * @param int|null $author_id Optional. If provided, only send notifications for notes authored by this user.
      */
-    public function send_pending_notifications() {
+    public function send_pending_notifications($author_id = null) {
         global $wpdb;
         $table_name = $wpdb->prefix . 'page_notes';
 
+        // Build author filter clause if filtering by specific user
+        $author_filter = '';
+        if ($author_id !== null) {
+            $author_filter = $wpdb->prepare(' AND n.user_id = %d', $author_id);
+        }
+
         // Get all notes with pending notifications (assigned to someone but notification not sent)
+        // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, PluginCheck.Security.DirectDB.UnescapedDBParameter -- $author_filter is prepared above when set, table name uses $wpdb->prefix (safe)
         $pending_notes = $wpdb->get_results(
             "SELECT n.*,
                 creator.display_name as creator_display_name,
@@ -2505,10 +2976,12 @@ class PageNotes {
             WHERE n.assigned_to IS NOT NULL
             AND n.assigned_to > 0
             AND n.notification_sent = 0
+            $author_filter
             ORDER BY assignee.ID, n.page_url, n.created_at ASC"
         );
 
         // Get all replies with pending notifications
+        // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, PluginCheck.Security.DirectDB.UnescapedDBParameter -- $author_filter is prepared above when set, table name uses $wpdb->prefix (safe)
         $pending_replies = $wpdb->get_results(
             "SELECT n.*,
                 creator.display_name as reply_author_name,
@@ -2521,11 +2994,20 @@ class PageNotes {
             LEFT JOIN {$wpdb->users} parent_user ON parent.user_id = parent_user.ID
             WHERE n.parent_id > 0
             AND n.notification_sent = 0
+            $author_filter
             ORDER BY parent_author_id, n.created_at ASC"
         );
 
         // Get all pending completion notifications
         $completion_table = $wpdb->prefix . 'page_notes_completions';
+
+        // Build completion author filter (uses completed_by instead of n.user_id)
+        $completion_author_filter = '';
+        if ($author_id !== null) {
+            $completion_author_filter = $wpdb->prepare(' AND c.completed_by = %d', $author_id);
+        }
+
+        // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, PluginCheck.Security.DirectDB.UnescapedDBParameter -- $completion_author_filter is prepared above when set, table name uses $wpdb->prefix (safe)
         $pending_completions = $wpdb->get_results(
             "SELECT c.*,
                 n.content as note_content,
@@ -2538,6 +3020,7 @@ class PageNotes {
             LEFT JOIN {$wpdb->users} completer ON c.completed_by = completer.ID
             LEFT JOIN {$wpdb->users} creator ON c.note_creator = creator.ID
             WHERE c.notification_sent = 0
+            $completion_author_filter
             ORDER BY c.note_creator, c.created_at ASC"
         );
 
@@ -2603,8 +3086,10 @@ class PageNotes {
 
         // Send reply notifications
         foreach ($replies_by_recipient as $recipient_id => $recipient_data) {
+            $recipient_got_email = false;
             foreach ($recipient_data['replies'] as $reply) {
                 // Get parent note details
+                // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name uses $wpdb->prefix (safe)
                 $parent_note = $wpdb->get_row($wpdb->prepare(
                     "SELECT n.*
                     FROM $table_name n
@@ -2621,15 +3106,20 @@ class PageNotes {
                     );
 
                     if ($email_sent) {
-                        $sent_count++;
+                        $recipient_got_email = true;
                         $note_ids_to_mark[] = intval($reply->id);
                     }
                 }
             }
+            // Count each recipient only once, not each reply
+            if ($recipient_got_email) {
+                $sent_count++;
+            }
         }
 
-        // Send completion notifications
+        // Send completion notifications - group by recipient to count correctly
         $completion_ids_to_mark = array();
+        $completion_recipients = array();
         foreach ($pending_completions as $completion) {
             if (empty($completion->creator_email)) {
                 continue; // Skip if creator doesn't exist
@@ -2642,20 +3132,25 @@ class PageNotes {
             );
 
             if ($email_sent) {
-                $sent_count++;
+                // Track unique recipients
+                $completion_recipients[$completion->note_creator] = true;
                 $completion_ids_to_mark[] = intval($completion->id);
             }
         }
+        // Add unique completion recipients to sent count
+        $sent_count += count($completion_recipients);
 
         // Mark all sent notifications
         if (!empty($note_ids_to_mark)) {
             $ids_string = implode(',', $note_ids_to_mark);
+            // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name uses $wpdb->prefix (safe), $ids_string is built from intval() processed IDs
             $wpdb->query("UPDATE $table_name SET notification_sent = 1 WHERE id IN ($ids_string)");
         }
 
         // Mark completion notifications as sent
         if (!empty($completion_ids_to_mark)) {
             $ids_string = implode(',', $completion_ids_to_mark);
+            // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name uses $wpdb->prefix (safe), $ids_string is built from intval() processed IDs
             $wpdb->query("UPDATE $completion_table SET notification_sent = 1 WHERE id IN ($ids_string)");
         }
 
@@ -3067,9 +3562,10 @@ class PageNotes {
         }
 
         // Get all users with reminders enabled
-        // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key, WordPress.DB.SlowDBQuery.slow_db_query_meta_value -- Required for reminder functionality
         $users = get_users(array(
+            // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key -- Required for reminder functionality, runs only via cron
             'meta_key' => 'page_notes_reminders_enabled',
+            // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_value -- Required for reminder functionality, runs only via cron
             'meta_value' => '1'
         ));
 
@@ -3099,6 +3595,7 @@ class PageNotes {
             }
 
             // Get all open notes assigned to this user
+            // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name uses $wpdb->prefix (safe)
             $open_notes = $wpdb->get_results($wpdb->prepare(
                 "SELECT n.*,
                     creator.display_name as creator_display_name,
@@ -3155,6 +3652,7 @@ class PageNotes {
         // Get activity from last 24 hours
         $yesterday = wp_date('Y-m-d H:i:s', strtotime('-24 hours'));
 
+        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name uses $wpdb->prefix (safe)
         $activities = $wpdb->get_results($wpdb->prepare(
             "SELECT a.*, n.page_url, n.page_id, u.ID as user_id
             FROM $activity_table a
