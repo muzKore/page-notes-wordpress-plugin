@@ -4,7 +4,7 @@ Tags: notes, collaboration, annotations, team, workflow
 Requires at least: 5.0
 Tested up to: 6.9
 Requires PHP: 7.4
-Stable tag: 1.4.3
+Stable tag: 1.5.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -110,6 +110,12 @@ Notes remain visible in the notes panel even if the original element is no longe
 6. Task reminder email example (when enabled + user opted in)
 
 == Changelog ==
+
+= 1.5.0 =
+* Improved: Email templates now use inline CSS styles for better mobile email client compatibility
+* Improved: Emails render consistently across Gmail app, Outlook mobile, Apple Mail, and other mobile clients
+* Improved: Activity digest stats section now uses table layout for reliable cross-client rendering
+* Improved: Added mobile-responsive media queries for email clients that support them
 
 = 1.4.3 =
 * Fixed: Critical bug where notes created with fallback selector strategy would not link to elements for other users

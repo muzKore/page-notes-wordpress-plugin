@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Page Notes
  * Description: Add collaborative notes to any element on your WordPress pages.
- * Version: 1.4.3
+ * Version: 1.5.0
  * Requires at least: 5.0
  * Requires PHP: 7.4
  * Author: Murray Chapman
@@ -17,7 +17,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Define plugin constants
-define('PAGE_NOTES_VERSION', '1.4.3');
+define('PAGE_NOTES_VERSION', '1.5.0');
 define('PAGE_NOTES_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('PAGE_NOTES_PLUGIN_URL', plugin_dir_url(__FILE__));
 
@@ -1996,7 +1996,9 @@ class PageNotes {
         <head>
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <!--[if !mso]><!-->
             <style>
+                /* Desktop styles - kept as fallback for clients that support <style> blocks */
                 body {
                     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
                     line-height: 1.6;
@@ -2040,12 +2042,6 @@ class PageNotes {
                     font-size: 20px;
                     font-weight: 600;
                     color: #2c3e50;
-                    display: flex;
-                    align-items: center;
-                    gap: 10px;
-                }
-                .email-icon {
-                    font-size: 24px;
                 }
                 .content {
                     padding: 30px;
@@ -2067,17 +2063,6 @@ class PageNotes {
                     font-weight: 600;
                     color: #495057;
                     margin-bottom: 10px;
-                }
-                .page-link {
-                    display: inline-block;
-                    color: #667eea;
-                    text-decoration: none;
-                    font-size: 14px;
-                    margin-bottom: 15px;
-                    font-weight: 500;
-                }
-                .page-link:hover {
-                    text-decoration: underline;
                 }
                 .note-box {
                     background: #f8f9fa;
@@ -2114,16 +2099,12 @@ class PageNotes {
                 .button {
                     display: inline-block;
                     padding: 12px 24px;
-                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    background: #667eea;
                     color: white !important;
                     text-decoration: none;
                     border-radius: 6px;
                     font-weight: 500;
                     margin: 10px 0;
-                    transition: transform 0.2s;
-                }
-                .button:hover {
-                    transform: translateY(-2px);
                 }
                 .quote-box {
                     background: white;
@@ -2140,10 +2121,6 @@ class PageNotes {
                     border-top: 2px solid #e9ecef;
                     font-size: 13px;
                     color: #6c757d;
-                }
-                .footer-link {
-                    color: #667eea;
-                    text-decoration: none;
                 }
                 .badge {
                     display: inline-block;
@@ -2162,21 +2139,29 @@ class PageNotes {
                     background: #ffc107;
                     color: #333;
                 }
+                /* Mobile responsive adjustments */
+                @media only screen and (max-width: 480px) {
+                    .content { padding: 20px !important; }
+                    .brand-header { padding: 20px !important; }
+                    .email-title-section { padding: 15px 20px !important; }
+                    .button { display: block !important; text-align: center !important; }
+                }
             </style>
+            <!--<![endif]-->
         </head>
-        <body>
-            <div class="email-container">
-                <div class="brand-header">
-                    <div class="brand-logo">📝</div>
-                    <h2 class="brand-title">Page Notes</h2>
+        <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f5f5f5;">
+            <div class="email-container" style="background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+                <div class="brand-header" style="background: #667eea; color: white; padding: 24px 30px; text-align: center;">
+                    <div class="brand-logo" style="font-size: 32px; margin-bottom: 8px;">📝</div>
+                    <h2 class="brand-title" style="margin: 0; font-size: 14px; font-weight: 600; letter-spacing: 0.5px; text-transform: uppercase; opacity: 0.9; color: white;">Page Notes</h2>
                 </div>
-                <div class="email-title-section">
-                    <h1 class="email-title">
-                        <span class="email-icon"><?php echo esc_html($icon); ?></span>
+                <div class="email-title-section" style="background: #f8f9fa; padding: 20px 30px; border-bottom: 2px solid #e9ecef;">
+                    <h1 class="email-title" style="margin: 0; font-size: 20px; font-weight: 600; color: #2c3e50;">
+                        <span class="email-icon" style="font-size: 24px; margin-right: 10px;"><?php echo esc_html($icon); ?></span>
                         <span><?php echo esc_html($email_title); ?></span>
                     </h1>
                 </div>
-                <div class="content">
+                <div class="content" style="padding: 30px;">
         <?php
         return ob_get_clean();
     }
@@ -2191,12 +2176,12 @@ class PageNotes {
         ob_start();
         ?>
                 </div>
-                <div class="footer">
+                <div class="footer" style="background: #f8f9fa; padding: 20px 30px; text-align: center; border-top: 2px solid #e9ecef; font-size: 13px; color: #6c757d;">
                     <p style="margin: 0 0 10px 0;">
                         This email was sent by <strong><?php echo esc_html($site_name); ?></strong> Page Notes
                     </p>
                     <p style="margin: 0;">
-                        <a href="<?php echo esc_url($site_url); ?>" class="footer-link"><?php echo esc_html($site_name); ?></a>
+                        <a href="<?php echo esc_url($site_url); ?>" style="color: #667eea; text-decoration: none;"><?php echo esc_html($site_name); ?></a>
                     </p>
                 </div>
             </div>
@@ -2245,17 +2230,17 @@ class PageNotes {
         $subject = 'Task Completed: ' . $page_title;
 
         $message = $this->get_email_header('Task Completed', '✅');
-        $message .= '<div class="greeting">Hi ' . esc_html($creator_name) . ',</div>';
-        $message .= '<p><strong>' . esc_html($completer_name) . '</strong> has marked your note as completed.</p>';
+        $message .= '<div class="greeting" style="font-size: 16px; margin-bottom: 20px; color: #495057;">Hi ' . esc_html($creator_name) . ',</div>';
+        $message .= '<p style="margin: 0 0 15px 0;"><strong>' . esc_html($completer_name) . '</strong> has marked your note as completed.</p>';
 
-        $message .= '<div class="note-box">';
-        $message .= '<div class="note-label">Your Note</div>';
-        $message .= '<div class="note-content">' . nl2br(esc_html($note_content)) . '</div>';
+        $message .= '<div class="note-box" style="background: #f8f9fa; padding: 16px; margin-bottom: 15px; border-left: 4px solid #667eea; border-radius: 4px;">';
+        $message .= '<div class="note-label" style="font-size: 12px; font-weight: 600; color: #6c757d; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;">Your Note</div>';
+        $message .= '<div class="note-content" style="font-size: 15px; color: #212529; line-height: 1.6;">' . nl2br(esc_html($note_content)) . '</div>';
         $message .= '</div>';
 
-        $message .= '<div class="page-section">';
-        $message .= '<div class="page-title">📄 ' . esc_html($page_title) . '</div>';
-        $message .= '<a href="' . esc_url($page_url) . '" class="button">View Page</a>';
+        $message .= '<div class="page-section" style="margin-bottom: 25px;">';
+        $message .= '<div class="page-title" style="font-size: 18px; font-weight: 600; color: #495057; margin-bottom: 10px;">📄 ' . esc_html($page_title) . '</div>';
+        $message .= '<a href="' . esc_url($page_url) . '" class="button" style="display: inline-block; padding: 12px 24px; background: #667eea; color: white; text-decoration: none; border-radius: 6px; font-weight: 500; margin: 10px 0;">View Page</a>';
         $message .= '</div>';
 
         $message .= $this->get_email_footer();
@@ -3232,26 +3217,26 @@ class PageNotes {
 
         $message = $this->get_email_header('Reply to Your Note', '💬');
 
-        $message .= '<div class="greeting">Hi ' . esc_html($to_name) . ',</div>';
-        $message .= '<p><strong>' . esc_html($reply_author_name) . '</strong> replied to your note on <strong>' . esc_html($page_title) . '</strong>.</p>';
+        $message .= '<div class="greeting" style="font-size: 16px; margin-bottom: 20px; color: #495057;">Hi ' . esc_html($to_name) . ',</div>';
+        $message .= '<p style="margin: 0 0 15px 0;"><strong>' . esc_html($reply_author_name) . '</strong> replied to your note on <strong>' . esc_html($page_title) . '</strong>.</p>';
 
-        $message .= '<div class="divider"></div>';
+        $message .= '<div class="divider" style="border-top: 2px solid #e9ecef; margin: 25px 0;"></div>';
 
-        $message .= '<div class="note-box">';
-        $message .= '<div class="note-label">Your Original Note</div>';
-        $message .= '<div class="note-content">' . nl2br(esc_html($parent_content)) . '</div>';
+        $message .= '<div class="note-box" style="background: #f8f9fa; padding: 16px; margin-bottom: 15px; border-left: 4px solid #667eea; border-radius: 4px;">';
+        $message .= '<div class="note-label" style="font-size: 12px; font-weight: 600; color: #6c757d; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;">Your Original Note</div>';
+        $message .= '<div class="note-content" style="font-size: 15px; color: #212529; line-height: 1.6;">' . nl2br(esc_html($parent_content)) . '</div>';
         $message .= '</div>';
 
-        $message .= '<div class="quote-box">';
-        $message .= '<div class="note-author">' . esc_html($reply_author_name) . ' replied:</div>';
-        $message .= '<div class="note-content">' . nl2br(esc_html($reply_content)) . '</div>';
+        $message .= '<div class="quote-box" style="background: white; border-left: 3px solid #dee2e6; padding: 12px 16px; margin: 12px 0; font-style: italic; color: #6c757d;">';
+        $message .= '<div class="note-author" style="font-size: 14px; font-weight: 500; color: #495057; margin-bottom: 8px; font-style: normal;">' . esc_html($reply_author_name) . ' replied:</div>';
+        $message .= '<div class="note-content" style="font-size: 15px; color: #212529; line-height: 1.6; font-style: normal;">' . nl2br(esc_html($reply_content)) . '</div>';
         $message .= '</div>';
 
-        $message .= '<div class="divider"></div>';
+        $message .= '<div class="divider" style="border-top: 2px solid #e9ecef; margin: 25px 0;"></div>';
 
-        $message .= '<div class="page-section">';
-        $message .= '<div class="page-title">📄 ' . esc_html($page_title) . '</div>';
-        $message .= '<a href="' . esc_url($page_url) . '" class="button">View Conversation</a>';
+        $message .= '<div class="page-section" style="margin-bottom: 25px;">';
+        $message .= '<div class="page-title" style="font-size: 18px; font-weight: 600; color: #495057; margin-bottom: 10px;">📄 ' . esc_html($page_title) . '</div>';
+        $message .= '<a href="' . esc_url($page_url) . '" class="button" style="display: inline-block; padding: 12px 24px; background: #667eea; color: white; text-decoration: none; border-radius: 6px; font-weight: 500; margin: 10px 0;">View Conversation</a>';
         $message .= '</div>';
 
         $message .= $this->get_email_footer();
@@ -3345,14 +3330,14 @@ class PageNotes {
     private function build_email_template($to_name, $notes_by_page, $total_notes, $page_count) {
         $message = $this->get_email_header('You Have New Notes', '🔔');
 
-        $message .= '<div class="greeting">Hi ' . esc_html($to_name) . ',</div>';
-        $message .= '<p>You\'ve been mentioned in <strong>' . esc_html($total_notes) . '</strong> note' . ($total_notes === 1 ? '' : 's') . ' across <strong>' . esc_html($page_count) . '</strong> page' . ($page_count === 1 ? '' : 's') . ':</p>';
+        $message .= '<div class="greeting" style="font-size: 16px; margin-bottom: 20px; color: #495057;">Hi ' . esc_html($to_name) . ',</div>';
+        $message .= '<p style="margin: 0 0 15px 0;">You\'ve been mentioned in <strong>' . esc_html($total_notes) . '</strong> note' . ($total_notes === 1 ? '' : 's') . ' across <strong>' . esc_html($page_count) . '</strong> page' . ($page_count === 1 ? '' : 's') . ':</p>';
 
-        $message .= '<div class="divider"></div>';
+        $message .= '<div class="divider" style="border-top: 2px solid #e9ecef; margin: 25px 0;"></div>';
 
         foreach ($notes_by_page as $page_data) {
-            $message .= '<div class="page-section">';
-            $message .= '<div class="page-title">📄 ' . esc_html($page_data['page_title']) . '</div>';
+            $message .= '<div class="page-section" style="margin-bottom: 25px;">';
+            $message .= '<div class="page-title" style="font-size: 18px; font-weight: 600; color: #495057; margin-bottom: 10px;">📄 ' . esc_html($page_data['page_title']) . '</div>';
 
             foreach ($page_data['notes'] as $note) {
                 $creator_name = $this->get_user_display_name($note->creator_id);
@@ -3360,17 +3345,17 @@ class PageNotes {
                 $display_content = preg_replace('/@[\w-]+/', '', $note->content);
                 $display_content = trim($display_content);
 
-                $message .= '<div class="note-box">';
-                $message .= '<div class="note-author">' . esc_html($creator_name) . ' mentioned you:</div>';
-                $message .= '<div class="note-content">' . nl2br(esc_html($display_content)) . '</div>';
+                $message .= '<div class="note-box" style="background: #f8f9fa; padding: 16px; margin-bottom: 15px; border-left: 4px solid #667eea; border-radius: 4px;">';
+                $message .= '<div class="note-author" style="font-size: 14px; font-weight: 500; color: #495057; margin-bottom: 8px;">' . esc_html($creator_name) . ' mentioned you:</div>';
+                $message .= '<div class="note-content" style="font-size: 15px; color: #212529; line-height: 1.6;">' . nl2br(esc_html($display_content)) . '</div>';
                 $message .= '</div>';
             }
 
-            $message .= '<a href="' . esc_url($page_data['page_url']) . '" class="button">View Page</a>';
+            $message .= '<a href="' . esc_url($page_data['page_url']) . '" class="button" style="display: inline-block; padding: 12px 24px; background: #667eea; color: white; text-decoration: none; border-radius: 6px; font-weight: 500; margin: 10px 0;">View Page</a>';
             $message .= '</div>';
 
             if ($page_data !== end($notes_by_page)) {
-                $message .= '<div class="divider"></div>';
+                $message .= '<div class="divider" style="border-top: 2px solid #e9ecef; margin: 25px 0;"></div>';
             }
         }
 
@@ -3756,14 +3741,14 @@ class PageNotes {
     private function build_reminder_email_template($to_name, $notes_by_page, $total_notes, $page_count) {
         $message = $this->get_email_header('Task Reminder', '⏰');
 
-        $message .= '<div class="greeting">Hi ' . esc_html($to_name) . ',</div>';
-        $message .= '<p>This is your reminder that you have <strong>' . esc_html($total_notes) . '</strong> incomplete task' . ($total_notes === 1 ? '' : 's') . ' waiting for you across <strong>' . esc_html($page_count) . '</strong> page' . ($page_count === 1 ? '' : 's') . ':</p>';
+        $message .= '<div class="greeting" style="font-size: 16px; margin-bottom: 20px; color: #495057;">Hi ' . esc_html($to_name) . ',</div>';
+        $message .= '<p style="margin: 0 0 15px 0;">This is your reminder that you have <strong>' . esc_html($total_notes) . '</strong> incomplete task' . ($total_notes === 1 ? '' : 's') . ' waiting for you across <strong>' . esc_html($page_count) . '</strong> page' . ($page_count === 1 ? '' : 's') . ':</p>';
 
-        $message .= '<div class="divider"></div>';
+        $message .= '<div class="divider" style="border-top: 2px solid #e9ecef; margin: 25px 0;"></div>';
 
         foreach ($notes_by_page as $page_data) {
-            $message .= '<div class="page-section">';
-            $message .= '<div class="page-title">📄 ' . esc_html($page_data['page_title']) . '</div>';
+            $message .= '<div class="page-section" style="margin-bottom: 25px;">';
+            $message .= '<div class="page-title" style="font-size: 18px; font-weight: 600; color: #495057; margin-bottom: 10px;">📄 ' . esc_html($page_data['page_title']) . '</div>';
 
             foreach ($page_data['notes'] as $note) {
                 $creator_name = $this->get_user_display_name($note->creator_id);
@@ -3783,20 +3768,20 @@ class PageNotes {
                     $age_text = 'created ' . $days_ago . ' days ago';
                 }
 
-                $message .= '<div class="note-box">';
-                $message .= '<div class="note-content">' . nl2br(esc_html($display_content)) . '</div>';
-                $message .= '<div class="note-meta">';
-                $message .= '<span class="badge badge-warning">Incomplete</span> ';
+                $message .= '<div class="note-box" style="background: #f8f9fa; padding: 16px; margin-bottom: 15px; border-left: 4px solid #667eea; border-radius: 4px;">';
+                $message .= '<div class="note-content" style="font-size: 15px; color: #212529; line-height: 1.6;">' . nl2br(esc_html($display_content)) . '</div>';
+                $message .= '<div class="note-meta" style="font-size: 13px; color: #6c757d; margin-top: 8px;">';
+                $message .= '<span class="badge badge-warning" style="display: inline-block; padding: 4px 10px; background: #ffc107; color: #333; border-radius: 12px; font-size: 12px; font-weight: 600; margin-right: 8px;">Incomplete</span> ';
                 $message .= 'Assigned by ' . esc_html($creator_name) . ' • ' . esc_html($age_text);
                 $message .= '</div>';
                 $message .= '</div>';
             }
 
-            $message .= '<a href="' . esc_url($page_data['page_url']) . '" class="button">Complete Tasks</a>';
+            $message .= '<a href="' . esc_url($page_data['page_url']) . '" class="button" style="display: inline-block; padding: 12px 24px; background: #667eea; color: white; text-decoration: none; border-radius: 6px; font-weight: 500; margin: 10px 0;">Complete Tasks</a>';
             $message .= '</div>';
 
             if ($page_data !== end($notes_by_page)) {
-                $message .= '<div class="divider"></div>';
+                $message .= '<div class="divider" style="border-top: 2px solid #e9ecef; margin: 25px 0;"></div>';
             }
         }
 
@@ -3854,30 +3839,38 @@ class PageNotes {
 
         $message = $this->get_email_header('Daily Activity Digest', '📊');
 
-        $message .= '<div class="greeting">Hi ' . esc_html($to_name) . ',</div>';
-        $message .= '<p>Here\'s your daily summary of Page Notes activity for the last 24 hours:</p>';
+        $message .= '<div class="greeting" style="font-size: 16px; margin-bottom: 20px; color: #495057;">Hi ' . esc_html($to_name) . ',</div>';
+        $message .= '<p style="margin: 0 0 15px 0;">Here\'s your daily summary of Page Notes activity for the last 24 hours:</p>';
 
-        // Summary stats
-        $message .= '<div style="display: flex; gap: 15px; margin: 20px 0; text-align: center;">';
+        // Summary stats - using table for better mobile email client support
+        $message .= '<table cellpadding="0" cellspacing="0" border="0" width="100%" style="margin: 20px 0;">';
+        $message .= '<tr>';
 
-        $message .= '<div style="flex: 1; background: #f8f9fa; padding: 15px; border-radius: 8px;">';
+        $message .= '<td width="33%" style="text-align: center; padding: 5px;">';
+        $message .= '<div style="background: #f8f9fa; padding: 15px; border-radius: 8px;">';
         $message .= '<div style="font-size: 28px; font-weight: 700; color: #28a745;">' . $created_count . '</div>';
         $message .= '<div style="font-size: 12px; color: #6c757d; text-transform: uppercase; letter-spacing: 0.5px;">Created</div>';
         $message .= '</div>';
+        $message .= '</td>';
 
-        $message .= '<div style="flex: 1; background: #f8f9fa; padding: 15px; border-radius: 8px;">';
+        $message .= '<td width="33%" style="text-align: center; padding: 5px;">';
+        $message .= '<div style="background: #f8f9fa; padding: 15px; border-radius: 8px;">';
         $message .= '<div style="font-size: 28px; font-weight: 700; color: #667eea;">' . $edited_count . '</div>';
         $message .= '<div style="font-size: 12px; color: #6c757d; text-transform: uppercase; letter-spacing: 0.5px;">Edited</div>';
         $message .= '</div>';
+        $message .= '</td>';
 
-        $message .= '<div style="flex: 1; background: #f8f9fa; padding: 15px; border-radius: 8px;">';
+        $message .= '<td width="33%" style="text-align: center; padding: 5px;">';
+        $message .= '<div style="background: #f8f9fa; padding: 15px; border-radius: 8px;">';
         $message .= '<div style="font-size: 28px; font-weight: 700; color: #dc3545;">' . $deleted_count . '</div>';
         $message .= '<div style="font-size: 12px; color: #6c757d; text-transform: uppercase; letter-spacing: 0.5px;">Deleted</div>';
         $message .= '</div>';
+        $message .= '</td>';
 
-        $message .= '</div>';
+        $message .= '</tr>';
+        $message .= '</table>';
 
-        $message .= '<div class="divider"></div>';
+        $message .= '<div class="divider" style="border-top: 2px solid #e9ecef; margin: 25px 0;"></div>';
 
         // Activity list
         foreach ($activities as $activity) {
@@ -3885,21 +3878,21 @@ class PageNotes {
             $time_ago = human_time_diff(strtotime($activity->created_at), current_time('timestamp')) . ' ago';
 
             $icon = '•';
-            $badge_class = '';
+            $badge_style = '';
             $action_text = $activity->action;
 
             if ($activity->action === 'created') {
                 $icon = '✓';
                 $action_text = 'created a note';
-                $badge_class = 'badge-success';
+                $badge_style = 'display: inline-block; padding: 4px 10px; background: #28a745; color: white; border-radius: 12px; font-size: 12px; font-weight: 600; margin-left: 8px;';
             } elseif ($activity->action === 'edited') {
                 $icon = '✎';
                 $action_text = 'edited a note';
-                $badge_class = '';
+                $badge_style = '';
             } elseif ($activity->action === 'deleted') {
                 $icon = '✗';
                 $action_text = 'deleted a note';
-                $badge_class = 'badge-warning';
+                $badge_style = 'display: inline-block; padding: 4px 10px; background: #ffc107; color: #333; border-radius: 12px; font-size: 12px; font-weight: 600; margin-left: 8px;';
             }
 
             $content_to_show = $activity->new_content ?: $activity->old_content;
@@ -3909,14 +3902,14 @@ class PageNotes {
             }
 
             $message .= '<div style="background: #f8f9fa; padding: 12px; margin-bottom: 10px; border-left: 4px solid #667eea; border-radius: 4px;">';
-            $message .= '<div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">';
-            $message .= '<span style="font-size: 16px;">' . $icon . '</span>';
-            $message .= '<strong>' . esc_html($user_name) . '</strong>';
+            $message .= '<div style="margin-bottom: 6px;">';
+            $message .= '<span style="font-size: 16px; margin-right: 8px;">' . $icon . '</span>';
+            $message .= '<strong>' . esc_html($user_name) . '</strong> ';
             $message .= '<span style="color: #6c757d;">' . esc_html($action_text) . '</span>';
-            if ($badge_class) {
-                $message .= '<span class="badge ' . $badge_class . '">' . ucfirst($activity->action) . '</span>';
+            if ($badge_style) {
+                $message .= '<span style="' . $badge_style . '">' . ucfirst($activity->action) . '</span>';
             }
-            $message .= '<span style="margin-left: auto; font-size: 13px; color: #999;">' . esc_html($time_ago) . '</span>';
+            $message .= '<br><span style="font-size: 13px; color: #999;">' . esc_html($time_ago) . '</span>';
             $message .= '</div>';
 
             if ($content_to_show) {

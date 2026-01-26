@@ -442,6 +442,8 @@ Navigate to: **Settings > Page Notes**
 
 ## Email Notifications
 
+All email notifications are HTML-formatted with inline CSS styles for consistent rendering across desktop and mobile email clients, including Gmail app, Outlook mobile, and Apple Mail.
+
 ### Instant Assignment Notifications
 
 **Triggered by:** @mentions in notes or replies
@@ -1017,4 +1019,4 @@ This section documents compliance with WordPress.org plugin directory requiremen
 ---
 
 _Last Updated: January 2026_
-_Plugin Version: 1.4.0_
+_Plugin Version: 1.5.0_
