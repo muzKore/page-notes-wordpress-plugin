@@ -179,7 +179,24 @@ Notes remain visible in the notes panel even if the original element is no longe
 * Improved: @mentions hidden from display and shown via badges
 
 = 1.0.0 =
-* Initial release
+* Initial release - Complete collaborative annotation system for WordPress
+* Added: Element-specific notes - attach notes to any HTML element on any page or post
+* Added: Visual element highlighting - selected elements are highlighted for easy identification
+* Added: Notes panel UI - slide-out panel for viewing and managing notes
+* Added: Threaded conversations - reply to notes to keep discussions in context
+* Added: Task status tracking - mark notes as complete or reopen them
+* Added: Role-based access control - configure which WordPress roles can use Page Notes
+* Added: Individual user overrides - enable or disable Page Notes for specific users
+* Added: Admin bar integration - quick toggle to enable/disable note mode
+* Added: Element selector generation - automatic CSS selector creation for note attachment
+* Added: Notes Manager role - designated user for oversight and management
+* Added: Character limit setting - admin-configurable maximum note length
+* Added: Settings page - centralised configuration under Settings > Page Notes
+* Added: Activity logging - track note creation, edits, and deletions
+* Added: AJAX-powered interface - smooth, no-reload interactions
+* Added: Secure capability checks - proper WordPress permission validation
+* Added: Database schema - custom table for efficient note storage
+* Added: Clean uninstall - option to remove all data when plugin is deleted
 
 == Upgrade Notice ==
 
