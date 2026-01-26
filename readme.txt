@@ -116,6 +116,8 @@ Notes remain visible in the notes panel even if the original element is no longe
 * Improved: Emails render consistently across Gmail app, Outlook mobile, Apple Mail, and other mobile clients
 * Improved: Activity digest stats section now uses table layout for reliable cross-client rendering
 * Improved: Added mobile-responsive media queries for email clients that support them
+* Fixed: Prevent duplicate note submissions when save button is clicked multiple times
+* Fixed: Notes now appear instantly after saving (optimistic UI) instead of reloading all notes
 
 = 1.4.3 =
 * Fixed: Critical bug where notes created with fallback selector strategy would not link to elements for other users
