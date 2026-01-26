@@ -21,7 +21,8 @@
         isDragging: false,            // Is the panel being dragged?
         dragOffset: { x: 0, y: 0 },   // Offset from mouse to panel corner during drag
         replyToNoteId: null,          // Track which note we're replying to
-        expandedReplies: new Set(),  // Track which reply sections are expanded (collapsed by default)
+        expandedReplies: new Set(),   // Track which reply sections are expanded (collapsed by default)
+        isSaving: false,              // Prevent double-click duplicate submissions
 
         /**
          * FORMAT DATE TIME
@@ -1141,6 +1142,13 @@
             document.querySelector('.note-form h3').textContent = 'Add Note';
             this.selectedElement = null;
             this.replyToNoteId = null;
+            // Reset saving state and button when form closes
+            this.isSaving = false;
+            const saveButton = document.querySelector('.note-form-btn-save');
+            if (saveButton) {
+                saveButton.disabled = false;
+                saveButton.textContent = 'Save Note';
+            }
         },
         
         /**
@@ -1148,12 +1156,25 @@
          * Sends the note to the server via AJAX
          */
         saveNote: function() {
+            // Prevent double-click duplicate submissions
+            if (this.isSaving) {
+                return;
+            }
+
             const content = document.querySelector('.note-form-textarea').value.trim();
 
             // Validate that user entered something
             if (!content) {
                 this.showAlert('Please enter a note', 'error');
                 return;
+            }
+
+            // Set saving state and disable button
+            this.isSaving = true;
+            const saveButton = document.querySelector('.note-form-btn-save');
+            if (saveButton) {
+                saveButton.disabled = true;
+                saveButton.textContent = 'Saving...';
             }
 
             // If this is a reply, we don't need an element selector
@@ -1219,6 +1240,9 @@
                         this.expandedReplies.add(parseInt(parentIdToExpand));
                     }
 
+                    // Reset saving state (form will close, but reset for consistency)
+                    this.isSaving = false;
+
                     // Note saved successfully!
                     this.closeNoteForm();
 
@@ -1234,15 +1258,30 @@
                     this.updateNotificationButtonVisibility();
                 } else {
                     // Something went wrong - show the error message from server
+                    this.resetSaveButton();
                     const errorMsg = data.data || 'Unknown error occurred';
                     this.showAlert('Error saving note: ' + errorMsg, 'error');
                 }
             })
             .catch(error => {
                 // This runs if there's a network error
+                this.resetSaveButton();
                 console.error('Error:', error);
                 this.showAlert('Failed to save note. Please check your connection and try again.', 'error');
             });
+        },
+
+        /**
+         * RESET SAVE BUTTON
+         * Resets the save button state after a failed save attempt
+         */
+        resetSaveButton: function() {
+            this.isSaving = false;
+            const saveButton = document.querySelector('.note-form-btn-save');
+            if (saveButton) {
+                saveButton.disabled = false;
+                saveButton.textContent = this.replyToNoteId ? 'Post Reply' : 'Save Note';
+            }
         },
         
         /**
