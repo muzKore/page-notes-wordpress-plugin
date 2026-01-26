@@ -1246,14 +1246,20 @@
                     // Note saved successfully!
                     this.closeNoteForm();
 
-                    // Store the new note ID to highlight it after reload
-                    const newNoteId = data.data.id;
+                    // Optimistic UI: Add the new note directly to currentNotes
+                    // The server returns the complete note object
+                    const newNote = data.data;
+                    this.currentNotes.push(newNote);
 
-                    this.loadCurrentPageNotes().then(() => {
-                        // After notes are loaded, highlight the new one
-                        this.highlightNewNote(newNoteId);
-                    });
+                    // Re-render the notes list with the new note included
+                    this.renderNotesList(this.currentNotes);
+
+                    // Highlight the new note
+                    this.highlightNewNote(newNote.id);
+
+                    // Update pages list in background (doesn't affect current page display)
                     this.loadPagesWithNotes();
+
                     // Update notification button visibility (new note might have @mention)
                     this.updateNotificationButtonVisibility();
                 } else {
