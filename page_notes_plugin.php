@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Page Notes
  * Description: Add collaborative notes to any element on your WordPress pages.
- * Version: 1.6.2
+ * Version: 1.6.3
  * Requires at least: 5.0
  * Requires PHP: 7.4
  * Author: Murray Chapman
@@ -17,7 +17,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Define plugin constants
-define('PAGE_NOTES_VERSION', '1.6.2');
+define('PAGE_NOTES_VERSION', '1.6.3');
 define('PAGE_NOTES_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('PAGE_NOTES_PLUGIN_URL', plugin_dir_url(__FILE__));
 
@@ -67,6 +67,7 @@ class PageNotes {
         add_action('wp_ajax_pn_send_activity_digest', array($this, 'ajax_send_activity_digest'));
         add_action('wp_ajax_pn_export_notes', array($this, 'ajax_export_notes'));
         add_action('wp_ajax_pn_cleanup_orphaned_notes', array($this, 'ajax_cleanup_orphaned_notes'));
+        add_action('wp_ajax_pn_clear_stuck_notifications', array($this, 'ajax_clear_stuck_notifications'));
 
         // Cron job for auto-sending notifications
         add_filter('cron_schedules', array($this, 'add_cron_schedules'));
@@ -1697,6 +1698,18 @@ class PageNotes {
                                 <span id="orphaned-notes-result" style="margin-left: 10px;"></span>
                             </td>
                         </tr>
+                        <tr>
+                            <th scope="row">Stuck Notifications</th>
+                            <td>
+                                <p class="description" style="margin-bottom: 10px;">
+                                    Notifications can get stuck in the queue if the assigned user or note creator has been deleted from WordPress. These cannot be sent but still show on the notification count. Use this to clear them.
+                                </p>
+                                <button type="button" id="clear-stuck-notifications-btn" class="button">
+                                    Clear Stuck Notifications
+                                </button>
+                                <span id="stuck-notifications-result" style="margin-left: 10px;"></span>
+                            </td>
+                        </tr>
                     </table>
                 </div>
 
@@ -1912,6 +1925,54 @@ class PageNotes {
                         cleanupBtn.textContent = 'Clean Up Orphaned Notes';
                         cleanupResult.textContent = '✗ Error: ' + error.message;
                         cleanupResult.style.color = '#dc3232';
+                    });
+                });
+            }
+
+            // Clear stuck notifications button handler
+            const clearStuckBtn = document.getElementById('clear-stuck-notifications-btn');
+            const clearStuckResult = document.getElementById('stuck-notifications-result');
+
+            if (clearStuckBtn) {
+                clearStuckBtn.addEventListener('click', function(e) {
+                    e.preventDefault();
+
+                    clearStuckBtn.disabled = true;
+                    clearStuckBtn.textContent = 'Clearing...';
+                    clearStuckResult.textContent = '';
+
+                    fetch(ajaxurl, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/x-www-form-urlencoded',
+                        },
+                        body: new URLSearchParams({
+                            action: 'pn_clear_stuck_notifications',
+                            nonce: '<?php echo esc_js(wp_create_nonce('page_notes_nonce')); ?>'
+                        })
+                    })
+                    .then(response => response.json())
+                    .then(data => {
+                        clearStuckBtn.disabled = false;
+                        clearStuckBtn.textContent = 'Clear Stuck Notifications';
+
+                        if (data.success) {
+                            clearStuckResult.textContent = '✓ ' + data.data.message;
+                            clearStuckResult.style.color = '#46b450';
+                        } else {
+                            clearStuckResult.textContent = '✗ ' + (data.data || 'Failed to clear');
+                            clearStuckResult.style.color = '#dc3232';
+                        }
+
+                        setTimeout(function() {
+                            clearStuckResult.textContent = '';
+                        }, 5000);
+                    })
+                    .catch(error => {
+                        clearStuckBtn.disabled = false;
+                        clearStuckBtn.textContent = 'Clear Stuck Notifications';
+                        clearStuckResult.textContent = '✗ Error: ' + error.message;
+                        clearStuckResult.style.color = '#dc3232';
                     });
                 });
             }
@@ -2404,7 +2465,24 @@ class PageNotes {
         $author_filter = $is_admin_or_manager ? null : get_current_user_id();
         $result = $this->send_pending_notifications($author_filter);
 
-        if ($result['recipients'] > 0) {
+        $cleared = isset($result['cleared']) ? $result['cleared'] : 0;
+
+        if ($result['recipients'] > 0 && $cleared > 0) {
+            wp_send_json_success(array(
+                'message' => sprintf(
+                    'Sent %d notification%s to %d recipient%s. Also cleared %d undeliverable notification%s (users no longer exist).',
+                    $result['sent'],
+                    $result['sent'] === 1 ? '' : 's',
+                    $result['recipients'],
+                    $result['recipients'] === 1 ? '' : 's',
+                    $cleared,
+                    $cleared === 1 ? '' : 's'
+                ),
+                'sent' => $result['sent'],
+                'recipients' => $result['recipients'],
+                'cleared' => $cleared
+            ));
+        } elseif ($result['recipients'] > 0) {
             wp_send_json_success(array(
                 'message' => sprintf(
                     'Sent %d notification%s to %d recipient%s',
@@ -2414,13 +2492,26 @@ class PageNotes {
                     $result['recipients'] === 1 ? '' : 's'
                 ),
                 'sent' => $result['sent'],
-                'recipients' => $result['recipients']
+                'recipients' => $result['recipients'],
+                'cleared' => 0
+            ));
+        } elseif ($cleared > 0) {
+            wp_send_json_success(array(
+                'message' => sprintf(
+                    'Cleared %d stuck notification%s. These could not be delivered as the assigned users no longer exist.',
+                    $cleared,
+                    $cleared === 1 ? '' : 's'
+                ),
+                'sent' => 0,
+                'recipients' => 0,
+                'cleared' => $cleared
             ));
         } else {
             wp_send_json_success(array(
                 'message' => 'No pending notifications to send',
                 'sent' => 0,
-                'recipients' => 0
+                'recipients' => 0,
+                'cleared' => 0
             ));
         }
     }
@@ -2655,6 +2746,86 @@ class PageNotes {
         );
 
         wp_send_json_success(array('message' => $message, 'deleted' => $total_deleted));
+    }
+
+    /**
+     * AJAX: Clear stuck notifications (queued but undeliverable due to deleted users)
+     */
+    public function ajax_clear_stuck_notifications() {
+        check_ajax_referer('page_notes_nonce', 'nonce');
+
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Insufficient permissions');
+            return;
+        }
+
+        global $wpdb;
+        $table_name = $wpdb->prefix . 'page_notes';
+        $completion_table = $wpdb->prefix . 'page_notes_completions';
+
+        // Find assignment notifications where the assignee no longer exists
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+        $stuck_assignment_ids = $wpdb->get_col(
+            "SELECT n.id FROM $table_name n
+            LEFT JOIN {$wpdb->users} u ON n.assigned_to = u.ID
+            WHERE n.notification_sent = 0
+            AND n.assigned_to > 0
+            AND u.ID IS NULL"
+        );
+
+        // Find reply notifications where the parent note author no longer exists
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+        $stuck_reply_ids = $wpdb->get_col(
+            "SELECT n.id FROM $table_name n
+            LEFT JOIN $table_name parent ON n.parent_id = parent.id
+            LEFT JOIN {$wpdb->users} u ON parent.user_id = u.ID
+            WHERE n.notification_sent = 0
+            AND n.parent_id > 0
+            AND parent.id IS NOT NULL
+            AND u.ID IS NULL"
+        );
+
+        // Find completion notifications where the note creator no longer exists
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+        $stuck_completion_ids = $wpdb->get_col(
+            "SELECT c.id FROM $completion_table c
+            LEFT JOIN {$wpdb->users} u ON c.note_creator = u.ID
+            WHERE c.notification_sent = 0
+            AND u.ID IS NULL"
+        );
+
+        $cleared = 0;
+
+        if (!empty($stuck_assignment_ids) || !empty($stuck_reply_ids)) {
+            $all_note_ids = array_map('intval', array_merge($stuck_assignment_ids, $stuck_reply_ids));
+            $ids_string = implode(',', $all_note_ids);
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.PreparedSQL.InterpolatedNotPrepared, PluginCheck.Security.DirectDB.UnescapedDBParameter -- $ids_string built from intval() processed IDs
+            $wpdb->query("UPDATE $table_name SET notification_sent = 1 WHERE id IN ($ids_string)");
+            $cleared += count($all_note_ids);
+        }
+
+        if (!empty($stuck_completion_ids)) {
+            $ids_string = implode(',', array_map('intval', $stuck_completion_ids));
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.PreparedSQL.InterpolatedNotPrepared, PluginCheck.Security.DirectDB.UnescapedDBParameter -- $ids_string built from intval() processed IDs
+            $wpdb->query("UPDATE $completion_table SET notification_sent = 1 WHERE id IN ($ids_string)");
+            $cleared += count($stuck_completion_ids);
+        }
+
+        if ($cleared > 0) {
+            wp_send_json_success(array(
+                'message' => sprintf(
+                    'Cleared %d stuck notification%s. These were queued for users that no longer exist.',
+                    $cleared,
+                    $cleared === 1 ? '' : 's'
+                ),
+                'cleared' => $cleared
+            ));
+        } else {
+            wp_send_json_success(array(
+                'message' => 'No stuck notifications found.',
+                'cleared' => 0
+            ));
+        }
     }
 
     /**
@@ -3018,9 +3189,12 @@ class PageNotes {
 
         // Group assignment notes by recipient
         $notes_by_recipient = array();
+        $undeliverable_note_ids = array();
         foreach ($pending_notes as $note) {
             if (empty($note->assignee_email)) {
-                continue; // Skip if assignee doesn't exist
+                // Assignee no longer exists - mark as sent to clear from queue
+                $undeliverable_note_ids[] = intval($note->id);
+                continue;
             }
 
             if (!isset($notes_by_recipient[$note->assignee_id])) {
@@ -3038,7 +3212,9 @@ class PageNotes {
         $replies_by_recipient = array();
         foreach ($pending_replies as $reply) {
             if (empty($reply->parent_author_email) || empty($reply->parent_author_id)) {
-                continue; // Skip if parent author doesn't exist
+                // Parent author no longer exists - mark as sent to clear from queue
+                $undeliverable_note_ids[] = intval($reply->id);
+                continue;
             }
 
             if (!isset($replies_by_recipient[$reply->parent_author_id])) {
@@ -3107,10 +3283,13 @@ class PageNotes {
 
         // Send completion notifications - group by recipient to count correctly
         $completion_ids_to_mark = array();
+        $undeliverable_completion_ids = array();
         $completion_recipients = array();
         foreach ($pending_completions as $completion) {
             if (empty($completion->creator_email)) {
-                continue; // Skip if creator doesn't exist
+                // Creator no longer exists - mark as sent to clear from queue
+                $undeliverable_completion_ids[] = intval($completion->id);
+                continue;
             }
 
             $email_sent = $this->send_completion_email(
@@ -3128,23 +3307,26 @@ class PageNotes {
         // Add unique completion recipients to sent count
         $sent_count += count($completion_recipients);
 
-        // Mark all sent notifications
-        if (!empty($note_ids_to_mark)) {
-            $ids_string = implode(',', $note_ids_to_mark);
+        // Mark all sent and undeliverable notifications (undeliverable = user no longer exists)
+        $all_note_ids_to_clear = array_unique(array_merge($note_ids_to_mark, $undeliverable_note_ids));
+        if (!empty($all_note_ids_to_clear)) {
+            $ids_string = implode(',', $all_note_ids_to_clear);
             // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name uses $wpdb->prefix (safe), $ids_string is built from intval() processed IDs
             $wpdb->query("UPDATE $table_name SET notification_sent = 1 WHERE id IN ($ids_string)");
         }
 
-        // Mark completion notifications as sent
-        if (!empty($completion_ids_to_mark)) {
-            $ids_string = implode(',', $completion_ids_to_mark);
+        // Mark completion notifications as sent and undeliverable
+        $all_completion_ids_to_clear = array_unique(array_merge($completion_ids_to_mark, $undeliverable_completion_ids));
+        if (!empty($all_completion_ids_to_clear)) {
+            $ids_string = implode(',', $all_completion_ids_to_clear);
             // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name uses $wpdb->prefix (safe), $ids_string is built from intval() processed IDs
             $wpdb->query("UPDATE $completion_table SET notification_sent = 1 WHERE id IN ($ids_string)");
         }
 
         return array(
             'sent' => count($note_ids_to_mark),
-            'recipients' => $sent_count
+            'recipients' => $sent_count,
+            'cleared' => count($undeliverable_note_ids) + count($undeliverable_completion_ids)
         );
     }
 

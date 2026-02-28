@@ -4,7 +4,7 @@ Tags: notes, collaboration, annotations, team, workflow
 Requires at least: 5.0
 Tested up to: 6.9
 Requires PHP: 7.4
-Stable tag: 1.6.2
+Stable tag: 1.6.3
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -110,6 +110,11 @@ Notes remain visible in the notes panel even if the original element is no longe
 6. Task reminder email example (when enabled + user opted in)
 
 == Changelog ==
+
+= 1.6.3 =
+* Fixed: Stuck notifications (queued for deleted users) now automatically clear when Send Notifications is clicked
+* Fixed: Send Notifications button no longer shows a count for notifications that cannot be delivered
+* Added: "Clear Stuck Notifications" button in Settings > Data Management for manual cleanup
 
 = 1.6.2 =
 * Improved: Email titles now include the website name as a clickable link (e.g., "You have notes on [Site Name]")
