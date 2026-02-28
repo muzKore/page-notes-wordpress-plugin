@@ -370,7 +370,13 @@
                         
                         <!-- Current page notes section -->
                         <div class="current-page-notes">
-                            <h4>Notes on This Page</h4>
+                            <div class="current-page-notes-header">
+                                <h4>Notes on This Page</h4>
+                                <label class="hide-completed-toggle">
+                                    <input type="checkbox" class="hide-completed-checkbox">
+                                    <span class="hide-completed-label">Hide completed</span>
+                                </label>
+                            </div>
                             <div class="notes-list"></div>
                         </div>
                     </div>
@@ -599,6 +605,27 @@
                         }
                         self.closeConfirm();
                     }
+                });
+            }
+
+            // Hide completed checkbox toggle
+            const hideCompletedCheckbox = document.querySelector('.hide-completed-checkbox');
+            if (hideCompletedCheckbox) {
+                // Initialize checkbox state from localStorage
+                try {
+                    hideCompletedCheckbox.checked = localStorage.getItem('pageNotesHideCompleted') === '1';
+                } catch (e) {
+                    // localStorage might be unavailable
+                }
+
+                hideCompletedCheckbox.addEventListener('change', function() {
+                    try {
+                        localStorage.setItem('pageNotesHideCompleted', this.checked ? '1' : '0');
+                    } catch (e) {
+                        // localStorage might be unavailable
+                    }
+                    // Re-render notes list with the new filter setting
+                    self.renderNotesList(self.currentNotes);
                 });
             }
 
@@ -1779,8 +1806,26 @@
                 return;
             }
 
-            // Filter to show only parent notes
-            const parentNotes = notes.filter(note => note.parent_id == 0);
+            // Check if we should hide completed notes
+            let hideCompleted = false;
+            try {
+                hideCompleted = localStorage.getItem('pageNotesHideCompleted') === '1';
+            } catch (e) {
+                // localStorage might be unavailable
+            }
+
+            // Filter to show only parent notes (and optionally hide completed)
+            let parentNotes = notes.filter(note => note.parent_id == 0);
+
+            if (hideCompleted) {
+                parentNotes = parentNotes.filter(note => note.status !== 'completed');
+            }
+
+            // Show empty state if all notes are hidden
+            if (parentNotes.length === 0 && notes.length > 0) {
+                notesList.innerHTML = '<div class="empty-state"><div class="empty-state-icon"><img src="' + pageNotesData.pluginUrl + 'assets/images/empty-notes.svg" alt="No notes" /></div><div class="empty-state-text">All notes are completed.<br>Uncheck "Hide completed" to see them.</div></div>';
+                return;
+            }
 
             // Sort notes: open notes first, then completed notes
             // Within each group, newest notes appear first
@@ -2164,11 +2209,27 @@
             const oldStatus = note.status;
             const newStatus = oldStatus === 'completed' ? 'open' : 'completed';
 
+            // If completing a parent note, check for open replies first
+            if (newStatus === 'completed' && note.parent_id == 0) {
+                const replies = this.getAllRepliesInThread(note.id, this.currentNotes);
+                const openReplies = replies.filter(r => r.status !== 'completed');
+                if (openReplies.length > 0) {
+                    const replyWord = openReplies.length === 1 ? 'reply' : 'replies';
+                    this.showAlert(`Please complete all ${openReplies.length} ${replyWord} before completing this note.`, 'info');
+                    return;
+                }
+            }
+
             // Optimistic UI update - change immediately for instant feedback
             note.status = newStatus;
             const noteElement = document.querySelector(`.note-item[data-note-id="${noteId}"]`);
+            let button = null;
             if (noteElement) {
-                const button = noteElement.querySelector('.note-btn-complete');
+                button = noteElement.querySelector('.note-btn-complete');
+                if (button) {
+                    // Disable button to prevent duplicate submissions
+                    button.disabled = true;
+                }
                 if (newStatus === 'completed') {
                     noteElement.classList.add('completed');
                     if (button) button.textContent = 'Reopen';
@@ -2192,6 +2253,9 @@
             })
             .then(response => response.json())
             .then(data => {
+                // Re-enable button
+                if (button) button.disabled = false;
+
                 if (data.success) {
                     // Update pages list in background (non-blocking)
                     this.loadPagesWithNotes();
@@ -2199,7 +2263,6 @@
                     // Revert optimistic update on failure
                     note.status = oldStatus;
                     if (noteElement) {
-                        const button = noteElement.querySelector('.note-btn-complete');
                         if (oldStatus === 'completed') {
                             noteElement.classList.add('completed');
                             if (button) button.textContent = 'Reopen';
@@ -2212,10 +2275,12 @@
                 }
             })
             .catch(error => {
+                // Re-enable button
+                if (button) button.disabled = false;
+
                 // Revert optimistic update on error
                 note.status = oldStatus;
                 if (noteElement) {
-                    const button = noteElement.querySelector('.note-btn-complete');
                     if (oldStatus === 'completed') {
                         noteElement.classList.add('completed');
                         if (button) button.textContent = 'Reopen';

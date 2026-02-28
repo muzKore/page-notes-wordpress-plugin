@@ -4,7 +4,7 @@ Tags: notes, collaboration, annotations, team, workflow
 Requires at least: 5.0
 Tested up to: 6.9
 Requires PHP: 7.4
-Stable tag: 1.5.0
+Stable tag: 1.6.2
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -110,6 +110,18 @@ Notes remain visible in the notes panel even if the original element is no longe
 6. Task reminder email example (when enabled + user opted in)
 
 == Changelog ==
+
+= 1.6.2 =
+* Improved: Email titles now include the website name as a clickable link (e.g., "You have notes on [Site Name]")
+
+= 1.6.1 =
+* Added: Parent notes now require all replies to be completed first before they can be marked as complete
+
+= 1.6.0 =
+* Added: "Hide completed" toggle in the notes panel to filter out completed tasks
+* Improved: All email notifications now display the website name prominently in the header
+* Improved: "Task Completed" email subject now includes the site name for clarity
+* Fixed: Complete/Reopen button now disabled during submission to prevent duplicate requests
 
 = 1.5.0 =
 * Improved: Email templates now use inline CSS styles for better mobile email client compatibility

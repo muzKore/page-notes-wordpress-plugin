@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Page Notes
  * Description: Add collaborative notes to any element on your WordPress pages.
- * Version: 1.5.0
+ * Version: 1.6.2
  * Requires at least: 5.0
  * Requires PHP: 7.4
  * Author: Murray Chapman
@@ -17,7 +17,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Define plugin constants
-define('PAGE_NOTES_VERSION', '1.5.0');
+define('PAGE_NOTES_VERSION', '1.6.2');
 define('PAGE_NOTES_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('PAGE_NOTES_PLUGIN_URL', plugin_dir_url(__FILE__));
 
@@ -2158,7 +2158,7 @@ class PageNotes {
                 <div class="email-title-section" style="background: #f8f9fa; padding: 20px 30px; border-bottom: 2px solid #e9ecef;">
                     <h1 class="email-title" style="margin: 0; font-size: 20px; font-weight: 600; color: #2c3e50;">
                         <span class="email-icon" style="font-size: 24px; margin-right: 10px;"><?php echo esc_html($icon); ?></span>
-                        <span><?php echo esc_html($email_title); ?></span>
+                        <span><?php echo $email_title; ?></span>
                     </h1>
                 </div>
                 <div class="content" style="padding: 30px;">
@@ -2221,15 +2221,18 @@ class PageNotes {
         $creator_name = $this->get_user_display_name($note_creator_id);
         $page_title = get_the_title($note->page_id) ?: 'Unknown Page';
         $page_url = $note->page_url;
+        $site_name = get_bloginfo('name');
+        $site_url = get_site_url();
 
         // Strip @mentions from displayed content
         $note_content = preg_replace('/@[\w-]+/', '', $note->content);
         $note_content = trim($note_content);
 
         // Build HTML email
-        $subject = 'Task Completed: ' . $page_title;
+        $subject = sprintf('[%s] Task Completed: %s', $site_name, $page_title);
 
-        $message = $this->get_email_header('Task Completed', '✅');
+        $email_title = 'Task completed on <a href="' . esc_url($site_url) . '" style="color: #667eea; text-decoration: none;">' . esc_html($site_name) . '</a>';
+        $message = $this->get_email_header($email_title, '✅');
         $message .= '<div class="greeting" style="font-size: 16px; margin-bottom: 20px; color: #495057;">Hi ' . esc_html($creator_name) . ',</div>';
         $message .= '<p style="margin: 0 0 15px 0;"><strong>' . esc_html($completer_name) . '</strong> has marked your note as completed.</p>';
 
@@ -3209,13 +3212,17 @@ class PageNotes {
      * Build HTML email template for reply notifications
      */
     private function build_reply_email_template($to_name, $reply_author_name, $parent_note, $reply_note, $page_title, $page_url) {
+        $site_name = get_bloginfo('name');
+        $site_url = get_site_url();
+
         // Strip @mentions from displayed content
         $parent_content = preg_replace('/@[\w-]+/', '', $parent_note->content);
         $parent_content = trim($parent_content);
         $reply_content = preg_replace('/@[\w-]+/', '', $reply_note->content);
         $reply_content = trim($reply_content);
 
-        $message = $this->get_email_header('Reply to Your Note', '💬');
+        $email_title = 'New reply on <a href="' . esc_url($site_url) . '" style="color: #667eea; text-decoration: none;">' . esc_html($site_name) . '</a>';
+        $message = $this->get_email_header($email_title, '💬');
 
         $message .= '<div class="greeting" style="font-size: 16px; margin-bottom: 20px; color: #495057;">Hi ' . esc_html($to_name) . ',</div>';
         $message .= '<p style="margin: 0 0 15px 0;"><strong>' . esc_html($reply_author_name) . '</strong> replied to your note on <strong>' . esc_html($page_title) . '</strong>.</p>';
@@ -3328,7 +3335,11 @@ class PageNotes {
      * Build HTML email template
      */
     private function build_email_template($to_name, $notes_by_page, $total_notes, $page_count) {
-        $message = $this->get_email_header('You Have New Notes', '🔔');
+        $site_name = get_bloginfo('name');
+        $site_url = get_site_url();
+
+        $email_title = 'You have notes on <a href="' . esc_url($site_url) . '" style="color: #667eea; text-decoration: none;">' . esc_html($site_name) . '</a>';
+        $message = $this->get_email_header($email_title, '🔔');
 
         $message .= '<div class="greeting" style="font-size: 16px; margin-bottom: 20px; color: #495057;">Hi ' . esc_html($to_name) . ',</div>';
         $message .= '<p style="margin: 0 0 15px 0;">You\'ve been mentioned in <strong>' . esc_html($total_notes) . '</strong> note' . ($total_notes === 1 ? '' : 's') . ' across <strong>' . esc_html($page_count) . '</strong> page' . ($page_count === 1 ? '' : 's') . ':</p>';
@@ -3739,7 +3750,11 @@ class PageNotes {
      * Build HTML email template for reminders
      */
     private function build_reminder_email_template($to_name, $notes_by_page, $total_notes, $page_count) {
-        $message = $this->get_email_header('Task Reminder', '⏰');
+        $site_name = get_bloginfo('name');
+        $site_url = get_site_url();
+
+        $email_title = 'You have tasks on <a href="' . esc_url($site_url) . '" style="color: #667eea; text-decoration: none;">' . esc_html($site_name) . '</a>';
+        $message = $this->get_email_header($email_title, '⏰');
 
         $message .= '<div class="greeting" style="font-size: 16px; margin-bottom: 20px; color: #495057;">Hi ' . esc_html($to_name) . ',</div>';
         $message .= '<p style="margin: 0 0 15px 0;">This is your reminder that you have <strong>' . esc_html($total_notes) . '</strong> incomplete task' . ($total_notes === 1 ? '' : 's') . ' waiting for you across <strong>' . esc_html($page_count) . '</strong> page' . ($page_count === 1 ? '' : 's') . ':</p>';
@@ -3835,9 +3850,12 @@ class PageNotes {
      * Build HTML email template for activity digest
      */
     private function build_activity_digest_template($to_name, $activities, $created_count, $edited_count, $deleted_count) {
+        $site_name = get_bloginfo('name');
+        $site_url = get_site_url();
         $total_count = count($activities);
 
-        $message = $this->get_email_header('Daily Activity Digest', '📊');
+        $email_title = 'Activity digest for <a href="' . esc_url($site_url) . '" style="color: #667eea; text-decoration: none;">' . esc_html($site_name) . '</a>';
+        $message = $this->get_email_header($email_title, '📊');
 
         $message .= '<div class="greeting" style="font-size: 16px; margin-bottom: 20px; color: #495057;">Hi ' . esc_html($to_name) . ',</div>';
         $message .= '<p style="margin: 0 0 15px 0;">Here\'s your daily summary of Page Notes activity for the last 24 hours:</p>';

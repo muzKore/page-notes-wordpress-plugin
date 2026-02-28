@@ -284,12 +284,44 @@
 }
 
 /* Current Page Notes Section */
-.current-page-notes h4 {
-  margin: 0 0 15px 0;
+.current-page-notes-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 15px;
+}
+
+.current-page-notes-header h4 {
+  margin: 0;
   font-size: 14px;
   color: #666;
   text-transform: uppercase;
   letter-spacing: 0.5px;
+}
+
+.hide-completed-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  color: #888;
+  user-select: none;
+}
+
+.hide-completed-toggle:hover {
+  color: #666;
+}
+
+.hide-completed-checkbox {
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+  accent-color: #4caf50;
+}
+
+.hide-completed-label {
+  white-space: nowrap;
 }
 
 .note-item {
