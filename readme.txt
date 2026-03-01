@@ -4,7 +4,7 @@ Tags: notes, collaboration, annotations, team, workflow
 Requires at least: 5.0
 Tested up to: 6.9
 Requires PHP: 7.4
-Stable tag: 1.6.3
+Stable tag: 1.6.4
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -110,6 +110,10 @@ Notes remain visible in the notes panel even if the original element is no longe
 6. Task reminder email example (when enabled + user opted in)
 
 == Changelog ==
+
+= 1.6.4 =
+* Fixed: Editing a note with a new or changed @mention now re-queues the notification for the newly mentioned user
+* Fixed: Instant email is sent immediately on edit when a new @mention is added (if instant notifications are enabled)
 
 = 1.6.3 =
 * Fixed: Stuck notifications (queued for deleted users) now automatically clear when Send Notifications is clicked

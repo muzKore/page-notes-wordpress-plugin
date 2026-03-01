@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Page Notes
  * Description: Add collaborative notes to any element on your WordPress pages.
- * Version: 1.6.3
+ * Version: 1.6.4
  * Requires at least: 5.0
  * Requires PHP: 7.4
  * Author: Murray Chapman
@@ -17,7 +17,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Define plugin constants
-define('PAGE_NOTES_VERSION', '1.6.3');
+define('PAGE_NOTES_VERSION', '1.6.4');
 define('PAGE_NOTES_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('PAGE_NOTES_PLUGIN_URL', plugin_dir_url(__FILE__));
 
@@ -898,6 +898,7 @@ class PageNotes {
         }
 
         $data = array();
+        $new_assignee_id = null;
 
         // Validate and add content if provided
         if (isset($_POST['content'])) {
@@ -915,6 +916,19 @@ class PageNotes {
             }
 
             $data['content'] = $content;
+
+            // Re-extract @mention from updated content
+            $new_assignee_id = $this->extract_mention_user_id($content);
+            $old_assignee_id = !empty($note->assigned_to) ? intval($note->assigned_to) : null;
+
+            // If the assigned user has changed, update assignment and re-queue notification
+            if ($new_assignee_id !== $old_assignee_id) {
+                $data['assigned_to'] = $new_assignee_id;
+                // Only reset notification if there is a new assignee to notify
+                if (!empty($new_assignee_id)) {
+                    $data['notification_sent'] = 0;
+                }
+            }
         }
 
         // Validate and add status if provided
@@ -950,6 +964,29 @@ class PageNotes {
             if (isset($data['status']) && $data['status'] === 'completed' && $note->status !== 'completed') {
                 // Status changed from not completed to completed
                 $this->handle_completion_notification($note_id, $note->user_id, get_current_user_id());
+            }
+
+            // Handle instant email for new/changed @mention on edit
+            if (!empty($new_assignee_id) && isset($data['assigned_to']) && $data['assigned_to'] == $new_assignee_id) {
+                $instant_email = get_option('page_notes_instant_email', '0');
+                if ($instant_email === '1') {
+                    $assignee = get_user_by('id', $new_assignee_id);
+                    if ($assignee && !empty($assignee->user_email)) {
+                        $updated_note = $wpdb->get_row($wpdb->prepare(
+                            // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name uses $wpdb->prefix (safe)
+                            "SELECT * FROM $table_name WHERE id = %d",
+                            $note_id
+                        ));
+                        if ($updated_note) {
+                            $this->send_notification_email(
+                                $assignee->user_email,
+                                $this->get_user_display_name($new_assignee_id),
+                                array($updated_note)
+                            );
+                            $wpdb->update($table_name, array('notification_sent' => 1), array('id' => $note_id));
+                        }
+                    }
+                }
             }
 
             wp_send_json_success('Note updated');
